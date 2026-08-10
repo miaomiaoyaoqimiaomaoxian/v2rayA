@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/v2rayA/v2rayA/kernel/coreObj"
 )
@@ -80,7 +81,7 @@ func (s *AnyTLS) Configuration(info PriorInfo) (c Configuration, err error) {
 		Password:                         password,
 		SNI:                              sni,
 		MinIdleSessions:                  minIdle,
-		AllowInsecure:                    s.AllowInsecure,
+		AllowInsecure:                    s.AllowInsecure || isTruthy(q.Get("insecure")),
 		PinnedPeerCertificateChainSha256: q.Get("pinnedPeerCertSha256"),
 		VerifyPeerCertByName:             q.Get("verifyPeerCertByName"),
 	})
@@ -96,6 +97,15 @@ func (s *AnyTLS) Configuration(info PriorInfo) (c Configuration, err error) {
 		},
 		UDPSupport: true,
 	}, nil
+}
+
+func isTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *AnyTLS) ExportToURL() string {
