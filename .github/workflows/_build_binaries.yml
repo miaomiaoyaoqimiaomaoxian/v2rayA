@@ -72,7 +72,9 @@ jobs:
             gcc-mips-linux-gnu \
             gcc-mipsel-linux-gnu \
             gcc-mips64-linux-gnuabi64 \
-            gcc-mips64el-linux-gnuabi64
+            gcc-mips64el-linux-gnuabi64 \
+            gcc-14-loongarch64-linux-gnu \
+            qemu-user
       - name: Build v2rayA Binary
         id: build_binary
         shell: bash
@@ -105,6 +107,10 @@ jobs:
                 cgo_enabled=1
                 cc="mips64el-linux-gnuabi64-gcc"
                 ;;
+              loong64)
+                cgo_enabled=1
+                cc="loongarch64-linux-gnu-gcc-14"
+                ;;
             esac
           fi
 
@@ -133,6 +139,31 @@ jobs:
             -trimpath \
             ./main
           echo "filename=v2raya_core_${filename}_${{ inputs.version }}${ext}" >> ${GITHUB_OUTPUT}
+      - name: Smoke-test Linux loong64 startup
+        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'loong64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          filename=$(jq -r '."linux-loong64".friendlyName' ./install/friendly-filenames.json)
+          config_dir=$(mktemp -d)
+          log_file="$config_dir/startup.log"
+          set +e
+          timeout 10s qemu-loongarch64 -L /usr/loongarch64-linux-gnu \
+            ./v2raya_binaries/v2raya_${filename}_${{ inputs.version }} \
+            --lite --config "$config_dir" --address 127.0.0.1:0 \
+            >"$log_file" 2>&1
+          status=$?
+          set -e
+          cat "$log_file"
+          if [ "$status" -ne 124 ]; then
+            echo "loong64 startup exited before the smoke-test timeout (status $status)" >&2
+            exit 1
+          fi
+          if grep -q "SQLite driver is unavailable" "$log_file"; then
+            echo "loong64 build has no usable SQLite driver" >&2
+            exit 1
+          fi
+          test -s "$config_dir/v2raya.db"
       - name: Upload v2rayA Binary Artifact
         uses: actions/upload-artifact@v7
         with:

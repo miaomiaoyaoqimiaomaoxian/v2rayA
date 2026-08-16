@@ -1,0 +1,254 @@
+<#
+.SYNOPSIS
+Builds the official v2rayA target matrix and downloads verified portable assets.
+
+.DESCRIPTION
+Dispatches the build-only workflow for an already-pushed commit, waits for it,
+and downloads the verified assets to the E-drive tools directory. It does not
+create tags or publish a GitHub Release.
+
+.EXAMPLE
+.\scripts\build-multiplatform-release.ps1 2.4.11.2
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true, Position = 0)]
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
+    [string]$Version,
+
+    [string]$Ref,
+
+    [string]$OutputDirectory
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$toolsRoot = Split-Path -Parent $repoRoot
+$workflow = 'build_multiplatform_portables.yml'
+
+if (-not $Ref) {
+    $Ref = (& git -C $repoRoot branch --show-current).Trim()
+}
+if (-not $Ref) {
+    throw 'The repository is in detached HEAD state. Pass -Ref explicitly.'
+}
+
+if (-not $OutputDirectory) {
+    $OutputDirectory = Join-Path $toolsRoot "v2raya-release-artifacts\v$Version"
+}
+$OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
+if (Test-Path -LiteralPath $OutputDirectory) {
+    $existingOutput = @(Get-ChildItem -LiteralPath $OutputDirectory -Force)
+    if ($existingOutput.Count -ne 0) {
+        throw "Output directory is not empty: $OutputDirectory"
+    }
+}
+
+$worktreeChanges = @(& git -C $repoRoot status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to read the Git worktree status.'
+}
+$releaseChanges = @($worktreeChanges | Where-Object {
+    $_ -notmatch '^\?\? \.serena(?:/|$)'
+})
+if ($releaseChanges.Count -ne 0) {
+    throw 'The worktree has uncommitted files other than local .serena data. Commit them before starting a release build.'
+}
+
+$headSha = (& git -C $repoRoot rev-parse HEAD).Trim()
+$remoteUrl = (& git -C $repoRoot remote get-url fork).Trim()
+if ($remoteUrl -notmatch 'github\.com[/:](?<slug>[^/]+/[^/]+?)(?:\.git)?$') {
+    throw "Cannot derive a GitHub repository from fork remote: $remoteUrl"
+}
+$repository = $Matches.slug
+
+$remoteLine = @(& git -C $repoRoot ls-remote fork "refs/heads/$Ref")
+if ($LASTEXITCODE -ne 0 -or $remoteLine.Count -ne 1) {
+    throw "Remote branch fork/$Ref does not exist."
+}
+$remoteSha = ($remoteLine[0] -split '\s+')[0]
+if ($remoteSha -ne $headSha) {
+    throw "fork/$Ref points to $remoteSha, but the local HEAD is $headSha. Push the exact commit first."
+}
+
+$ghCandidates = @(
+    (Join-Path $toolsRoot 'v2raya-anytls-fix\.build-tools\github-cli-2.97.0\bin\gh.exe'),
+    (Join-Path $toolsRoot '.build-tools\github-cli\bin\gh.exe')
+)
+$ghPath = $ghCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $ghPath) {
+    $ghCommand = Get-Command gh -ErrorAction SilentlyContinue
+    if ($ghCommand) {
+        $ghPath = $ghCommand.Source
+    }
+}
+if (-not $ghPath) {
+    throw "GitHub CLI was not found under $toolsRoot or on PATH."
+}
+
+$gitCommand = Get-Command git -ErrorAction Stop
+$temporaryToken = $false
+$previousToken = $env:GH_TOKEN
+
+try {
+    if (-not $env:GH_TOKEN) {
+        & $ghPath auth status --hostname github.com *> $null
+        if ($LASTEXITCODE -ne 0) {
+            $credentialRequest = "protocol=https`nhost=github.com`n`n"
+            $credentialLines = @($credentialRequest | & $gitCommand.Source credential fill 2>$null)
+            $passwordLine = $credentialLines | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
+            if (-not $passwordLine) {
+                throw 'GitHub CLI is not authenticated and Git Credential Manager returned no GitHub credential.'
+            }
+            $env:GH_TOKEN = $passwordLine.Substring('password='.Length)
+            $temporaryToken = $true
+        }
+    }
+
+    & $ghPath workflow view $workflow --repo $repository *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Workflow $workflow is not registered on the fork default branch. Merge it there before starting a build."
+    }
+
+    $existingJson = & $ghPath @(
+        'run', 'list',
+        '--repo', $repository,
+        '--workflow', $workflow,
+        '--branch', $Ref,
+        '--event', 'workflow_dispatch',
+        '--limit', '100',
+        '--json', 'databaseId'
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to list existing workflow runs.'
+    }
+    $existingIds = @($existingJson | ConvertFrom-Json | ForEach-Object { [long]$_.databaseId })
+
+    & $ghPath @(
+        'workflow', 'run', $workflow,
+        '--repo', $repository,
+        '--ref', $Ref,
+        '--field', "version=$Version"
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to dispatch the multi-platform build workflow.'
+    }
+
+    $run = $null
+    $deadline = (Get-Date).AddMinutes(2)
+    do {
+        Start-Sleep -Seconds 2
+        $runsJson = & $ghPath @(
+            'run', 'list',
+            '--repo', $repository,
+            '--workflow', $workflow,
+            '--branch', $Ref,
+            '--event', 'workflow_dispatch',
+            '--limit', '20',
+            '--json', 'databaseId,headSha,displayTitle,url,createdAt,status'
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to locate the dispatched workflow run.'
+        }
+        $run = @($runsJson | ConvertFrom-Json) |
+            Where-Object {
+                $_.headSha -eq $headSha -and
+                $_.displayTitle -eq "Build $Version from $Ref" -and
+                [long]$_.databaseId -notin $existingIds
+            } |
+            Sort-Object createdAt -Descending |
+            Select-Object -First 1
+    } while (-not $run -and (Get-Date) -lt $deadline)
+
+    if (-not $run) {
+        throw 'The workflow was dispatched, but its run ID was not visible within two minutes.'
+    }
+
+    Write-Host "Watching GitHub Actions run $($run.databaseId): $($run.url)"
+    & $ghPath run watch $run.databaseId --repo $repository --exit-status
+    if ($LASTEXITCODE -ne 0) {
+        throw "GitHub Actions run $($run.databaseId) failed."
+    }
+
+    if (-not (Test-Path -LiteralPath $OutputDirectory)) {
+        New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
+    }
+
+    & $ghPath @(
+        'run', 'download', [string]$run.databaseId,
+        '--repo', $repository,
+        '--name', "release-assets-$Version",
+        '--dir', $OutputDirectory
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to download the completed release asset artifact.'
+    }
+
+    $allFiles = @(Get-ChildItem -LiteralPath $OutputDirectory -File)
+    $checksumFiles = @($allFiles | Where-Object Name -Like '*.sha256.txt')
+    $assets = @($allFiles | Where-Object Name -NotLike '*.sha256.txt')
+    if ($assets.Count -ne 54 -or $checksumFiles.Count -ne 54) {
+        throw "Expected 54 assets and 54 checksums; found $($assets.Count) assets and $($checksumFiles.Count) checksums."
+    }
+
+    $targets = @(
+        @{ Name = 'linux_x64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_arm64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_x86'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_riscv64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_mips64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_mips64le'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_mips32le'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_mips32'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_loongarch64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'linux_armv7'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'windows_x64'; Archive = 'zip'; Executable = '.exe' },
+        @{ Name = 'windows_arm64'; Archive = 'zip'; Executable = '.exe' },
+        @{ Name = 'darwin_x64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'darwin_arm64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'freebsd_x64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'freebsd_arm64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'openbsd_x64'; Archive = 'tar.gz'; Executable = '' },
+        @{ Name = 'openbsd_arm64'; Archive = 'tar.gz'; Executable = '' }
+    )
+    $expectedAssets = foreach ($target in $targets) {
+        "v2raya_$($target.Name)_$Version$($target.Executable)"
+        "v2raya_core_$($target.Name)_$Version$($target.Executable)"
+        $portableTarget = $target.Name.Replace('_', '-')
+        "v2raya-$Version-$portableTarget-portable.$($target.Archive)"
+    }
+    $actualAssetNames = @($assets.Name)
+    $missingAssets = @($expectedAssets | Where-Object { $_ -notin $actualAssetNames })
+    $unexpectedAssets = @($actualAssetNames | Where-Object { $_ -notin $expectedAssets })
+    if ($missingAssets.Count -ne 0 -or $unexpectedAssets.Count -ne 0) {
+        throw "Release asset names do not match the official matrix. Missing: $($missingAssets -join ', '). Unexpected: $($unexpectedAssets -join ', ')."
+    }
+
+    foreach ($asset in $assets) {
+        $checksumPath = "$($asset.FullName).sha256.txt"
+        if (-not (Test-Path -LiteralPath $checksumPath)) {
+            throw "Missing checksum for $($asset.Name)."
+        }
+        $expected = (Get-Content -LiteralPath $checksumPath -Raw).Trim().ToLowerInvariant()
+        if ($expected -notmatch '^[0-9a-f]{64}$') {
+            throw "Invalid SHA256 sidecar for $($asset.Name)."
+        }
+        $actual = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($expected -ne $actual) {
+            throw "SHA256 mismatch for $($asset.Name)."
+        }
+    }
+
+    Write-Host "Verified 36 binaries, 18 portable archives and 54 SHA256 files."
+    Write-Host "Output: $OutputDirectory"
+} finally {
+    if ($temporaryToken) {
+        if ($null -eq $previousToken) {
+            Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:GH_TOKEN = $previousToken
+        }
+    }
+}

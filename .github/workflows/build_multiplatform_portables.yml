@@ -1,0 +1,69 @@
+name: Build Multi-platform Portable Artifacts
+run-name: Build ${{ inputs.version }} from ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Numeric binary version, for example 2.4.11.2"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  Validate_Version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate numeric version
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "version must contain only three or four numeric components" >&2
+            exit 1
+          fi
+
+  Build_v2rayA_Web:
+    needs: Validate_Version
+    uses: ./.github/workflows/_build_web.yml
+
+  Build_v2rayA_Binaries:
+    needs: [Validate_Version, Build_v2rayA_Web]
+    uses: ./.github/workflows/_build_binaries.yml
+    with:
+      version: ${{ inputs.version }}
+
+  Package_Release_Assets:
+    needs: Build_v2rayA_Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Download official-matrix binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: v2raya_*
+          path: build/downloads
+          merge-multiple: true
+      - name: Build portable archives and checksums
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          ./scripts/package-portables.sh \
+            "$VERSION" \
+            build/downloads \
+            build/release \
+            "$GITHUB_SHA"
+      - name: Upload complete release asset set
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-${{ inputs.version }}
+          path: build/release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
