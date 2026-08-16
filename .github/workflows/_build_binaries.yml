@@ -163,7 +163,8 @@ jobs:
             echo "loong64 build has no usable SQLite driver" >&2
             exit 1
           fi
-          test -s "$config_dir/v2raya.db"
+          grep -q "Database schema initialized successfully" "$log_file"
+          test -f "$config_dir/v2raya.db"
       - name: Upload v2rayA Binary Artifact
         uses: actions/upload-artifact@v7
         with:
