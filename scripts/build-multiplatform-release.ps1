@@ -83,16 +83,30 @@ $resolvedEntries = @($remoteEntries | Where-Object {
     ($_.Name -eq "refs/tags/$Ref" -and
         "refs/tags/$Ref^{}" -notin $remoteEntries.Name)
 })
-$remoteShas = @($resolvedEntries.Sha | Sort-Object -Unique)
-if ($remoteShas.Count -eq 0) {
+if ($resolvedEntries.Count -eq 0) {
     throw "Remote branch or tag fork/$Ref does not exist."
 }
+$remoteShas = @($resolvedEntries | ForEach-Object { $_.Sha } | Sort-Object -Unique)
 if ($remoteShas.Count -ne 1) {
     throw "fork/$Ref is ambiguous because its branch and tag resolve to different commits."
 }
 $remoteSha = $remoteShas[0]
 if ($remoteSha -ne $headSha) {
     throw "fork/$Ref points to $remoteSha, but the local HEAD is $headSha. Push the exact commit first."
+}
+
+$isTag = @($remoteEntries | Where-Object { $_.Name -like 'refs/tags/*' }).Count -gt 0
+if ($isTag) {
+    if ($Ref -match '^v(?<base>\d+\.\d+\.\d+)$') {
+        $tagVersion = $Matches.base
+    } elseif ($Ref -match '^v(?<base>\d+\.\d+\.\d+)-custom\.(?<custom>\d+)$') {
+        $tagVersion = "$($Matches.base).$($Matches.custom)"
+    } else {
+        throw 'Release tags must use vX.Y.Z or vX.Y.Z-custom.N format.'
+    }
+    if ($Version -ne $tagVersion) {
+        throw "Version $Version does not match tag $Ref; expected $tagVersion."
+    }
 }
 
 $ghCandidates = @(

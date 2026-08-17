@@ -12,6 +12,8 @@ jobs:
   Build_v2rayA_Binaries:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           # Linux amd64/arm64: TinyTun supported
