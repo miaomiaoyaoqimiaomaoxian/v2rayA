@@ -1,14 +1,17 @@
 <#
 .SYNOPSIS
-Builds the official v2rayA target matrix and downloads verified portable assets.
+Builds and downloads the official v2rayA release matrix plus portable archives.
 
 .DESCRIPTION
-Dispatches the build-only workflow for an already-pushed commit, waits for it,
-and downloads the verified assets to the E-drive tools directory. It does not
-create tags or publish a GitHub Release.
+Dispatches the build-only workflow for an already-pushed commit or tag, waits
+for it, and downloads the verified assets to the E-drive tools directory. It
+does not create tags or publish a GitHub Release.
 
 .EXAMPLE
 .\scripts\build-multiplatform-release.ps1 2.4.11.2
+
+.EXAMPLE
+.\scripts\build-multiplatform-release.ps1 -Version 2.4.11.3 -Ref v2.4.11-custom.3
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +29,7 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $toolsRoot = Split-Path -Parent $repoRoot
+$workspaceRoot = Split-Path -Parent $toolsRoot
 $workflow = 'build_multiplatform_portables.yml'
 
 if (-not $Ref) {
@@ -64,20 +68,56 @@ if ($remoteUrl -notmatch 'github\.com[/:](?<slug>[^/]+/[^/]+?)(?:\.git)?$') {
 }
 $repository = $Matches.slug
 
-$remoteLine = @(& git -C $repoRoot ls-remote fork "refs/heads/$Ref")
-if ($LASTEXITCODE -ne 0 -or $remoteLine.Count -ne 1) {
-    throw "Remote branch fork/$Ref does not exist."
+$remoteLines = @(& git -C $repoRoot ls-remote fork `
+    "refs/heads/$Ref" "refs/tags/$Ref" "refs/tags/$Ref^{}")
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to resolve fork ref $Ref."
 }
-$remoteSha = ($remoteLine[0] -split '\s+')[0]
+$remoteEntries = @($remoteLines | ForEach-Object {
+    $parts = $_ -split '\s+', 2
+    [pscustomobject]@{ Sha = $parts[0]; Name = $parts[1] }
+})
+$resolvedEntries = @($remoteEntries | Where-Object {
+    $_.Name -eq "refs/heads/$Ref" -or
+    $_.Name -eq "refs/tags/$Ref^{}" -or
+    ($_.Name -eq "refs/tags/$Ref" -and
+        "refs/tags/$Ref^{}" -notin $remoteEntries.Name)
+})
+$remoteShas = @($resolvedEntries.Sha | Sort-Object -Unique)
+if ($remoteShas.Count -eq 0) {
+    throw "Remote branch or tag fork/$Ref does not exist."
+}
+if ($remoteShas.Count -ne 1) {
+    throw "fork/$Ref is ambiguous because its branch and tag resolve to different commits."
+}
+$remoteSha = $remoteShas[0]
 if ($remoteSha -ne $headSha) {
     throw "fork/$Ref points to $remoteSha, but the local HEAD is $headSha. Push the exact commit first."
 }
 
 $ghCandidates = @(
+    (Join-Path $repoRoot '.build-tools\github-cli\bin\gh.exe'),
+    (Join-Path $workspaceRoot '.toolchains\github-cli\bin\gh.exe'),
+    (Join-Path $workspaceRoot '.toolchains\github-cli-2.97.0\bin\gh.exe'),
+    (Join-Path $toolsRoot '.build-tools\github-cli\bin\gh.exe'),
     (Join-Path $toolsRoot 'v2raya-anytls-fix\.build-tools\github-cli-2.97.0\bin\gh.exe'),
-    (Join-Path $toolsRoot '.build-tools\github-cli\bin\gh.exe')
+    (Join-Path $toolsRoot 'v2raya-anytls-fix\.build-tools\github-cli\bin\gh.exe')
 )
 $ghPath = $ghCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $ghPath) {
+    $toolRoots = @(
+        (Join-Path $workspaceRoot '.toolchains'),
+        (Join-Path $repoRoot '.build-tools')
+    )
+    $ghPath = $toolRoots |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        ForEach-Object {
+            Get-ChildItem -LiteralPath $_ -Directory -Filter 'github-cli*' -ErrorAction SilentlyContinue
+        } |
+        ForEach-Object { Join-Path $_.FullName 'bin\gh.exe' } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+}
 if (-not $ghPath) {
     $ghCommand = Get-Command gh -ErrorAction SilentlyContinue
     if ($ghCommand) {
@@ -85,7 +125,7 @@ if (-not $ghPath) {
     }
 }
 if (-not $ghPath) {
-    throw "GitHub CLI was not found under $toolsRoot or on PATH."
+    throw "GitHub CLI was not found under $workspaceRoot\.toolchains, repository .build-tools, or on PATH."
 }
 
 $gitCommand = Get-Command git -ErrorAction Stop
@@ -116,7 +156,6 @@ try {
         'run', 'list',
         '--repo', $repository,
         '--workflow', $workflow,
-        '--branch', $Ref,
         '--event', 'workflow_dispatch',
         '--limit', '100',
         '--json', 'databaseId'
@@ -144,7 +183,6 @@ try {
             'run', 'list',
             '--repo', $repository,
             '--workflow', $workflow,
-            '--branch', $Ref,
             '--event', 'workflow_dispatch',
             '--limit', '20',
             '--json', 'databaseId,headSha,displayTitle,url,createdAt,status'
@@ -189,8 +227,8 @@ try {
     $allFiles = @(Get-ChildItem -LiteralPath $OutputDirectory -File)
     $checksumFiles = @($allFiles | Where-Object Name -Like '*.sha256.txt')
     $assets = @($allFiles | Where-Object Name -NotLike '*.sha256.txt')
-    if ($assets.Count -ne 54 -or $checksumFiles.Count -ne 54) {
-        throw "Expected 54 assets and 54 checksums; found $($assets.Count) assets and $($checksumFiles.Count) checksums."
+    if ($assets.Count -ne 84 -or $checksumFiles.Count -ne 84) {
+        throw "Expected 84 assets and 84 checksums; found $($assets.Count) assets and $($checksumFiles.Count) checksums."
     }
 
     $targets = @(
@@ -219,6 +257,26 @@ try {
         $portableTarget = $target.Name.Replace('_', '-')
         "v2raya-$Version-$portableTarget-portable.$($target.Archive)"
     }
+    $linuxArchitectures = @(
+        'x64', 'arm64', 'x86', 'riscv64', 'mips64', 'mips64le',
+        'mips32le', 'mips32', 'loongarch64', 'armv7'
+    )
+    foreach ($architecture in $linuxArchitectures) {
+        $expectedAssets += "installer_debian_${architecture}_$Version.deb"
+        $expectedAssets += "installer_redhat_${architecture}_$Version.rpm"
+    }
+    $archLinuxArchitectures = @(
+        'x64', 'arm64', 'x86', 'riscv64', 'loongarch64', 'armv7'
+    )
+    foreach ($architecture in $archLinuxArchitectures) {
+        $expectedAssets += "installer_archlinux_${architecture}_$Version.pkg.tar.zst"
+    }
+    $expectedAssets += @(
+        "installer_windows_inno_x64_$Version.exe",
+        "installer_windows_inno_arm64_$Version.exe",
+        'web.tar.gz',
+        'web.zip'
+    )
     $actualAssetNames = @($assets.Name)
     $missingAssets = @($expectedAssets | Where-Object { $_ -notin $actualAssetNames })
     $unexpectedAssets = @($actualAssetNames | Where-Object { $_ -notin $expectedAssets })
@@ -241,7 +299,7 @@ try {
         }
     }
 
-    Write-Host "Verified 36 binaries, 18 portable archives and 54 SHA256 files."
+    Write-Host "Verified 36 binaries, 28 installers, 2 Web archives, 18 portable archives and 84 SHA256 files."
     Write-Host "Output: $OutputDirectory"
 } finally {
     if ($temporaryToken) {

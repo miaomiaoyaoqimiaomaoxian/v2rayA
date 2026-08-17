@@ -1,4 +1,4 @@
-name: Build Multi-platform Portable Artifacts
+name: Build Official Matrix and Portables
 run-name: Build ${{ inputs.version }} from ${{ github.ref_name }}
 
 on:
@@ -29,6 +29,8 @@ jobs:
   Build_v2rayA_Web:
     needs: Validate_Version
     uses: ./.github/workflows/_build_web.yml
+    with:
+      upload_archive: true
 
   Build_v2rayA_Binaries:
     needs: [Validate_Version, Build_v2rayA_Web]
@@ -36,8 +38,26 @@ jobs:
     with:
       version: ${{ inputs.version }}
 
-  Package_Release_Assets:
+  Build_Linux_Packages:
     needs: Build_v2rayA_Binaries
+    uses: ./.github/workflows/_build_linux_packages.yml
+    with:
+      version: ${{ inputs.version }}
+
+  Build_Windows_Installers:
+    needs: Build_v2rayA_Binaries
+    uses: ./.github/workflows/_build_windows_installer.yml
+    with:
+      version: ${{ inputs.version }}
+
+  Package_Release_Assets:
+    needs:
+      [
+        Build_v2rayA_Web,
+        Build_v2rayA_Binaries,
+        Build_Linux_Packages,
+        Build_Windows_Installers,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -49,16 +69,57 @@ jobs:
           pattern: v2raya_*
           path: build/downloads
           merge-multiple: true
-      - name: Build portable archives and checksums
+      - name: Download official installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: installer_*
+          path: build/installers
+          merge-multiple: true
+      - name: Download official Web archive
+        uses: actions/download-artifact@v8
+        with:
+          name: web.tar.gz
+          path: build/web-archive
+      - name: Download official Web files
+        uses: actions/download-artifact@v8
+        with:
+          name: web
+          path: build/web
+      - name: Build complete release asset set
         env:
           VERSION: ${{ inputs.version }}
         shell: bash
         run: |
+          set -euo pipefail
           ./scripts/package-portables.sh \
             "$VERSION" \
             build/downloads \
             build/release \
             "$GITHUB_SHA"
+
+          mkdir -p build/web-release
+          (
+            cd build/web
+            zip -q -r -9 ../web-release/web.zip .
+          )
+
+          cp build/installers/installer_* build/release/
+          cp build/web-archive/web.tar.gz build/release/
+          cp build/web-release/web.zip build/release/
+
+          for asset in build/release/installer_* \
+            build/release/web.tar.gz build/release/web.zip; do
+            sha256sum "$asset" | awk '{print $1}' >"$asset.sha256.txt"
+          done
+
+          asset_count=$(find build/release -maxdepth 1 -type f \
+            ! -name '*.sha256.txt' | wc -l)
+          checksum_count=$(find build/release -maxdepth 1 -type f \
+            -name '*.sha256.txt' | wc -l)
+          if [ "$asset_count" -ne 84 ] || [ "$checksum_count" -ne 84 ]; then
+            echo "expected 84 assets and 84 checksums; found $asset_count assets and $checksum_count checksums" >&2
+            exit 1
+          fi
       - name: Upload complete release asset set
         uses: actions/upload-artifact@v7
         with:
