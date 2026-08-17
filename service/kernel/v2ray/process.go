@@ -43,6 +43,31 @@ func NewProcess(tmpl *Template,
 	prestart func() error, poststart func() error,
 	postUnexpectedStop func(p *Process),
 ) (*Process, error) {
+	return newProcess(
+		tmpl,
+		asset.GetV2rayConfigPath(),
+		asset.GetV2rayConfigDirPath(),
+		prestart,
+		poststart,
+		postUnexpectedStop,
+	)
+}
+
+func NewStandaloneProcess(tmpl *Template, configPath string) (*Process, error) {
+	return newProcess(
+		tmpl,
+		configPath,
+		"",
+		func() error { return nil },
+		func() error { return nil },
+		func(*Process) {},
+	)
+}
+
+func newProcess(tmpl *Template, configPath, configDir string,
+	prestart func() error, poststart func() error,
+	postUnexpectedStop func(p *Process),
+) (*Process, error) {
 	process := &Process{
 		template: tmpl,
 		done:     make(chan struct{}),
@@ -69,7 +94,7 @@ func NewProcess(tmpl *Template,
 		}
 		process.tag2WhichIndex = tag2WhichIndex
 	}
-	err = WriteV2rayConfig(tmpl.ToConfigBytes())
+	err = writeV2rayConfig(configPath, tmpl.ToConfigBytes())
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +119,7 @@ func NewProcess(tmpl *Template,
 	if err = prestart(); err != nil {
 		return nil, err
 	}
-	proc, err := StartCoreProcess(pCtx)
+	proc, err := startCoreProcess(pCtx, configPath, configDir)
 	if err != nil {
 		return nil, err
 	}
@@ -236,19 +261,16 @@ func RunWithLog(ctx context.Context, name string, argv []string, dir string, env
 }
 
 func StartCoreProcess(ctx context.Context) (*os.Process, error) {
+	return startCoreProcess(ctx, asset.GetV2rayConfigPath(), asset.GetV2rayConfigDirPath())
+}
+
+func startCoreProcess(ctx context.Context, configPath, configDir string) (*os.Process, error) {
 	v2rayBinPath, err := where.GetV2rayBinPath()
 	if err != nil {
 		return nil, err
 	}
 	dir := filepath.Dir(v2rayBinPath)
-	var arguments = []string{
-		v2rayBinPath,
-		"run",
-		"--config=" + asset.GetV2rayConfigPath(),
-	}
-	if confdir := asset.GetV2rayConfigDirPath(); confdir != "" {
-		arguments = append(arguments, "--confdir="+confdir)
-	}
+	arguments := coreProcessArguments(v2rayBinPath, configPath, configDir)
 
 	// Get asset directory
 	assetDir := asset.GetV2rayLocationAssetOverride()
@@ -287,6 +309,18 @@ func StartCoreProcess(ctx context.Context) (*os.Process, error) {
 		return nil, err
 	}
 	return proc, nil
+}
+
+func coreProcessArguments(v2rayBinPath, configPath, configDir string) []string {
+	arguments := []string{
+		v2rayBinPath,
+		"run",
+		"--config=" + configPath,
+	}
+	if configDir != "" {
+		arguments = append(arguments, "--confdir="+configDir)
+	}
+	return arguments
 }
 
 func findAvailablePluginPorts(vms []serverObj.ServerObj) (pluginPortMap map[int]int, err error) {

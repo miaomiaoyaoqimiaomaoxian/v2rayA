@@ -1,12 +1,14 @@
 package service
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,7 +104,6 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 		}
 	}
 	which = whiches.Get()
-	v2rayRunning := v2ray.ProcessManager.Running()
 	wg := new(sync.WaitGroup)
 	vms := make([]serverObj.ServerObj, len(which))
 	//init vmessInfos
@@ -115,27 +116,14 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 		}
 		vms[i] = sr.ServerObj
 	}
-	//modify the template based on current configuration
-	var (
-		tmpl *v2ray.Template
-		err  error
-	)
-	if v2rayRunning {
-		tmpl, err = v2ray.NewTemplateFromConnectedServers(nil)
-		if err != nil {
-			if !errors.Is(err, v2ray.NoConnectedServerErr) {
-				log.Warn("NewTemplateFromConnectedServers: %v", err)
-			}
-		}
-	}
-	if tmpl == nil {
-		tmpl = v2ray.NewEmptyTemplate(&configure.Setting{
-			RulePortMode: configure.WhitelistMode,
-			TcpFastOpen:  configure.Default,
-			MuxOn:        configure.No,
-			Transparent:  configure.TransparentClose,
-		})
-		tmpl.SetAPI(nil)
+	tmpl := v2ray.NewEmptyTemplate(&configure.Setting{
+		RulePortMode: configure.WhitelistMode,
+		TcpFastOpen:  configure.Default,
+		MuxOn:        configure.No,
+		Transparent:  configure.TransparentClose,
+	})
+	if _, err := tmpl.SetAPIOnRandomPort(nil); err != nil {
+		return nil, err
 	}
 	inboundPortMap := make([]string, len(vms))
 	pluginPortMap := make(map[int]int)
@@ -207,11 +195,29 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 	tmpl.Routing.DomainStrategy = "AsIs"
 	addHosts(tmpl, vms)
 	tmpl.SetOutboundSockopt()
-	v2ray.ProcessManager.SetLatencyTesting(true)
-	if err := v2ray.ProcessManager.Start(tmpl); err != nil {
-		v2ray.ProcessManager.SetLatencyTesting(false)
+	configFile, err := os.CreateTemp("", "v2raya-latency-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("create latency config: %w", err)
+	}
+	configPath := configFile.Name()
+	if err := configFile.Close(); err != nil {
+		_ = os.Remove(configPath)
+		return nil, fmt.Errorf("close latency config: %w", err)
+	}
+	defer os.Remove(configPath)
+	latencyProcess, err := v2ray.NewStandaloneProcess(tmpl, configPath)
+	if err != nil {
 		return nil, err
 	}
+	var closeErr error
+	var closeOnce sync.Once
+	closeLatencyProcess := func() error {
+		closeOnce.Do(func() {
+			closeErr = latencyProcess.Close()
+		})
+		return closeErr
+	}
+	defer closeLatencyProcess()
 	//limit the concurrency
 	wg = new(sync.WaitGroup)
 	cc := make(chan interface{}, maxParallel)
@@ -233,14 +239,13 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 		}(i)
 	}
 	wg.Wait()
-	v2ray.ProcessManager.SetLatencyTesting(false)
-	if v2rayRunning && configure.GetConnectedServers() != nil {
-		err := v2ray.UpdateV2RayConfig()
-		if err != nil {
-			return which, fmt.Errorf("cannot restart v2ray-core: %w", err)
-		}
-	} else {
-		v2ray.ProcessManager.Stop(true)
+	if err := closeLatencyProcess(); err != nil {
+		return which, fmt.Errorf("stop latency core: %w", err)
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelWait()
+	if err := latencyProcess.WaitUntilExit(waitCtx); err != nil {
+		return which, fmt.Errorf("wait for latency core: %w", err)
 	}
 	if err := configure.NewWhiches(which).SaveLatencies(); err != nil {
 		return nil, fmt.Errorf("failed to save the latency test result: %v", err)

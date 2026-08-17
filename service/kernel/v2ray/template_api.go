@@ -14,10 +14,18 @@ import (
 )
 
 func (t *Template) SetAPI(serverData *ServerData) (port int, err error) {
-	// find a valid port
 	config := configure.GetPortsNotNil()
-	if config.Api.Port != 0 {
-		port = config.Api.Port
+	return t.setAPI(serverData, config.Api.Port, config.Api.Services)
+}
+
+func (t *Template) SetAPIOnRandomPort(serverData *ServerData) (port int, err error) {
+	config := configure.GetPortsNotNil()
+	return t.setAPI(serverData, 0, config.Api.Services)
+}
+
+func (t *Template) setAPI(serverData *ServerData, preferredPort int, configuredServices []string) (port int, err error) {
+	if preferredPort != 0 {
+		port = preferredPort
 	} else {
 		for {
 			if l, err := net.Listen("tcp4", "127.0.0.1:0"); err == nil {
@@ -31,7 +39,7 @@ func (t *Template) SetAPI(serverData *ServerData) (port int, err error) {
 	services := []string{
 		"LoggerService",
 	}
-	services = slicex.Uniq(append(services, config.Api.Services...))
+	services = slicex.Uniq(append(services, configuredServices...))
 	// observatory
 	if serverData != nil {
 		outbounds := t.outNames()
