@@ -179,14 +179,25 @@ try {
     }
     $existingIds = @($existingJson | ConvertFrom-Json | ForEach-Object { [long]$_.databaseId })
 
-    & $ghPath @(
-        'workflow', 'run', $workflow,
-        '--repo', $repository,
-        '--ref', $Ref,
-        '--field', "version=$Version"
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to dispatch the multi-platform build workflow.'
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        $dispatchOutput = @(& $ghPath @(
+            'workflow', 'run', $workflow,
+            '--repo', $repository,
+            '--ref', $Ref,
+            '--field', "version=$Version"
+        ) 2>&1)
+        if ($LASTEXITCODE -eq 0) {
+            break
+        }
+
+        $dispatchMessage = ($dispatchOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        if ($attempt -eq 4 -or $dispatchMessage -notmatch 'HTTP (429|5\d{2})\b') {
+            throw "Unable to dispatch the multi-platform build workflow. $dispatchMessage"
+        }
+
+        $retryDelay = 5 * $attempt
+        Write-Warning "GitHub returned a transient API error while dispatching (attempt $attempt of 4). Retrying in $retryDelay seconds."
+        Start-Sleep -Seconds $retryDelay
     }
 
     $run = $null
