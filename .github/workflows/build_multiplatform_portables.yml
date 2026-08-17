@@ -45,7 +45,7 @@ jobs:
       version: ${{ inputs.version }}
 
   Build_Windows_Installers:
-    needs: Build_v2rayA_Binaries
+    needs: Build_Linux_Packages
     uses: ./.github/workflows/_build_windows_installer.yml
     with:
       version: ${{ inputs.version }}
