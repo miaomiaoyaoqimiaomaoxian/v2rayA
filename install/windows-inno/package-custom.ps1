@@ -23,6 +23,10 @@ $managerVersion = (& $ManagerExe --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $managerVersion -ne "v$Version") {
     throw "Manager version does not match v$Version"
 }
+$coreVersion = (& $CoreExe version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $coreVersion -notmatch '^V2RAYA_CORE\s+(\S+)' -or $Matches[1] -ne "v$Version") {
+    throw "Core version does not match v$Version"
+}
 
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
