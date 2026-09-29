@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     status TEXT NOT NULL DEFAULT '',
     info TEXT DEFAULT '',
     auto_select INTEGER NOT NULL DEFAULT 0,
+    auto_update_mode TEXT NOT NULL DEFAULT 'none',
+    auto_update_interval_hour INTEGER NOT NULL DEFAULT 0,
+    last_update_attempt_at DATETIME DEFAULT NULL,
     filter TEXT DEFAULT '',
     group_id TEXT DEFAULT '',
     sort INTEGER NOT NULL DEFAULT 0,
@@ -101,6 +104,9 @@ func MigrateSchema(db *sql.DB) error {
 		}
 	}
 
+	if err := migrateSubscriptionPolicy(db); err != nil {
+		return err
+	}
 	return migrateLegacyOutboundTables(db)
 }
 

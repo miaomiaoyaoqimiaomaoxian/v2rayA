@@ -108,6 +108,16 @@ const usage = computed(() => parseQuota(props.subscription.info));
           >{{ t("subscription.numberServers") }}:
           {{ subscription.servers.length }}</v-chip
         >
+        <v-chip size="small" variant="tonal">
+          {{ t("setting.autoUpdateSub") }}:
+          {{
+            (subscription.autoUpdateMode ?? "none") === "none"
+              ? t("setting.options.off")
+              : subscription.autoUpdateMode === "auto_update"
+                ? t("setting.options.updateSubWhenStart")
+                : `${subscription.autoUpdateIntervalHour} h`
+          }}
+        </v-chip>
         <v-chip v-if="subscription.status" size="small" variant="outlined"
           ><span dir="ltr">{{
             dayjs(subscription.status).format("YYYY-MM-DD HH:mm")

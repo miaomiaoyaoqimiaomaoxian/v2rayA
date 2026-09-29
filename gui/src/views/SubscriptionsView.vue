@@ -29,7 +29,7 @@ defineExpose({ sync });
         :prepend-icon="mdiCogOutline"
         :disabled="disabled"
         @click="model.subscriptionSettings"
-        >{{ t("proxies.autoUpdate") }}</v-btn
+        >{{ t("setting.preferModeWhenUpdate") }}</v-btn
       >
       <v-spacer />
       <v-btn

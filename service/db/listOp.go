@@ -73,14 +73,19 @@ func setSubscription(tx *sql.Tx, index int, parsed gjson.Result) error {
 	if parsed.Get("autoSelect").Bool() {
 		autoSelect = 1
 	}
+	mode := parsed.Get("autoUpdateMode").String()
+	if mode == "" {
+		mode = "none"
+	}
+	interval := parsed.Get("autoUpdateIntervalHour").Int()
 
 	// The first statement writes, so the transaction takes the write lock
 	// up front under busy_timeout instead of upgrading a read snapshot that
 	// another connection's commit may have made stale (SQLITE_BUSY_SNAPSHOT).
 	var subID int64
 	err := tx.QueryRow(
-		"UPDATE subscriptions SET address = ?, remarks = ?, status = ?, info = ?, auto_select = ?, updated_at = CURRENT_TIMESTAMP WHERE sort = ? RETURNING id",
-		address, remarks, status, info, autoSelect, index,
+		"UPDATE subscriptions SET address = ?, remarks = ?, status = ?, info = ?, auto_select = ?, auto_update_mode = ?, auto_update_interval_hour = ?, updated_at = CURRENT_TIMESTAMP WHERE sort = ? RETURNING id",
+		address, remarks, status, info, autoSelect, mode, interval, index,
 	).Scan(&subID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("ListSet: subscription at index %d not found", index)
@@ -135,11 +140,13 @@ func serversGet(index int) ([]byte, error) {
 func SubscriptionsGet(index int) ([]byte, error) {
 	db := GetDB()
 	var subID int64
-	var address, remarks, status, info string
+	var address, remarks, status, info, mode string
 	var autoSelectInt int
+	var interval int
+	var lastAttempt sql.NullString
 	err := db.QueryRow(
-		"SELECT id, address, remarks, status, info, auto_select FROM subscriptions WHERE sort = ?", index,
-	).Scan(&subID, &address, &remarks, &status, &info, &autoSelectInt)
+		"SELECT id, address, remarks, status, info, auto_select, auto_update_mode, auto_update_interval_hour, last_update_attempt_at FROM subscriptions WHERE sort = ?", index,
+	).Scan(&subID, &address, &remarks, &status, &info, &autoSelectInt, &mode, &interval, &lastAttempt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("ListGet: can't get element from an empty list")
 	}
@@ -166,7 +173,7 @@ func SubscriptionsGet(index int) ([]byte, error) {
 		servers = append(servers, s)
 	}
 
-	return subscriptionJSON(remarks, address, status, info, servers, autoSelectInt != 0)
+	return subscriptionJSON(subID, remarks, address, status, info, servers, autoSelectInt != 0, mode, interval, lastAttempt.String)
 }
 
 // ListAppend appends values to a list.
@@ -236,8 +243,8 @@ func SubscriptionsAppend(val interface{}) (err error) {
 			}
 
 			res, err := db.Exec(
-				"INSERT INTO subscriptions (address, remarks, status, info, auto_select, sort) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), -1) + 1 FROM subscriptions))",
-				address, remarks, status, info, autoSelect,
+				"INSERT INTO subscriptions (address, remarks, status, info, auto_select, auto_update_mode, auto_update_interval_hour, sort) VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), -1) + 1 FROM subscriptions))",
+				address, remarks, status, info, autoSelect, subscriptionMode(item), item.Get("autoUpdateIntervalHour").Int(),
 			)
 			if err != nil {
 				return err
@@ -291,7 +298,7 @@ func ServersGetAll() (list [][]byte, err error) {
 
 func SubscriptionsGetAll() (list [][]byte, err error) {
 	db := GetDB()
-	rows, err := db.Query("SELECT id, address, remarks, status, info, auto_select FROM subscriptions ORDER BY sort")
+	rows, err := db.Query("SELECT id, address, remarks, status, info, auto_select, auto_update_mode, auto_update_interval_hour, last_update_attempt_at FROM subscriptions ORDER BY sort")
 	if err != nil {
 		return nil, err
 	}
@@ -299,9 +306,10 @@ func SubscriptionsGetAll() (list [][]byte, err error) {
 
 	for rows.Next() {
 		var id int64
-		var address, remarks, status, info string
-		var autoSelectInt int
-		if err := rows.Scan(&id, &address, &remarks, &status, &info, &autoSelectInt); err != nil {
+		var address, remarks, status, info, mode string
+		var autoSelectInt, interval int
+		var lastAttempt sql.NullString
+		if err := rows.Scan(&id, &address, &remarks, &status, &info, &autoSelectInt, &mode, &interval, &lastAttempt); err != nil {
 			return nil, err
 		}
 
@@ -324,7 +332,7 @@ func SubscriptionsGetAll() (list [][]byte, err error) {
 		}
 		serverRows.Close()
 
-		result, err := subscriptionJSON(remarks, address, status, info, servers, autoSelectInt != 0)
+		result, err := subscriptionJSON(id, remarks, address, status, info, servers, autoSelectInt != 0, mode, interval, lastAttempt.String)
 		if err != nil {
 			return nil, err
 		}
@@ -462,17 +470,29 @@ func SubscriptionsLen() (length int, err error) {
 // server rows are already JSON; the scalar columns are user- or
 // provider-supplied text and must be escaped, otherwise a remark with a
 // quote made the whole subscription unreadable.
-func subscriptionJSON(remarks, address, status, info string, servers []string, autoSelect bool) ([]byte, error) {
+func subscriptionJSON(id int64, remarks, address, status, info string, servers []string, autoSelect bool, mode string, interval int, lastAttempt string) ([]byte, error) {
 	raw := make([]jsoniter.RawMessage, 0, len(servers))
 	for _, s := range servers {
 		raw = append(raw, jsoniter.RawMessage(s))
 	}
 	return jsoniter.Marshal(struct {
-		Remarks    string                `json:"remarks"`
-		Address    string                `json:"address"`
-		Status     string                `json:"status"`
-		Info       string                `json:"info"`
-		Servers    []jsoniter.RawMessage `json:"servers"`
-		AutoSelect bool                  `json:"autoSelect"`
-	}{remarks, address, status, info, raw, autoSelect})
+		DatabaseID             int64                 `json:"_databaseId"`
+		Remarks                string                `json:"remarks"`
+		Address                string                `json:"address"`
+		Status                 string                `json:"status"`
+		Info                   string                `json:"info"`
+		Servers                []jsoniter.RawMessage `json:"servers"`
+		AutoSelect             bool                  `json:"autoSelect"`
+		AutoUpdateMode         string                `json:"autoUpdateMode"`
+		AutoUpdateIntervalHour int                   `json:"autoUpdateIntervalHour"`
+		LastUpdateAttemptAt    string                `json:"lastUpdateAttemptAt,omitempty"`
+	}{id, remarks, address, status, info, raw, autoSelect, mode, interval, lastAttempt})
+}
+
+func subscriptionMode(parsed gjson.Result) string {
+	mode := parsed.Get("autoUpdateMode").String()
+	if mode == "" {
+		return "none"
+	}
+	return mode
 }

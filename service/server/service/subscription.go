@@ -16,6 +16,7 @@ import (
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/common/httpClient"
 	"github.com/v2rayA/v2rayA/common/resolv"
+	"github.com/v2rayA/v2rayA/db"
 	"github.com/v2rayA/v2rayA/db/configure"
 	"github.com/v2rayA/v2rayA/kernel/ipforward"
 	"github.com/v2rayA/v2rayA/kernel/serverObj"
@@ -268,6 +269,9 @@ func UpdateSubscription(index int, disconnectIfNecessary bool) (err error) {
 	if subscription == nil {
 		return common.Coded("SUBSCRIPTION_NOT_FOUND", fmt.Errorf("subscription #%d no longer exists; reload the page", index+1), map[string]interface{}{"id": index + 1})
 	}
+	if err := db.MarkSubscriptionUpdateAttempt(subscription.DatabaseID); err != nil {
+		return err
+	}
 	addr := subscription.Address
 	c := httpClient.GetHttpClientAutomatically()
 	resolv.CheckResolvConf()
@@ -407,9 +411,17 @@ func ModifySubscriptionRemark(subscription touch.Subscription) (err error) {
 	if raw == nil {
 		return common.Coded("SUBSCRIPTION_NOT_FOUND", fmt.Errorf("subscription #%d does not exist; reload the page", subscription.ID), map[string]interface{}{"id": subscription.ID})
 	}
+	if subscription.AutoUpdateMode != configure.NotAutoUpdate && subscription.AutoUpdateMode != configure.AutoUpdate && subscription.AutoUpdateMode != configure.AutoUpdateAtIntervals {
+		return common.Coded("INVALID_SUBSCRIPTION_UPDATE_MODE", fmt.Errorf("invalid subscription update mode"), nil)
+	}
+	if subscription.AutoUpdateMode == configure.AutoUpdateAtIntervals && subscription.AutoUpdateIntervalHour < 1 {
+		return common.Coded("INVALID_SUBSCRIPTION_UPDATE_INTERVAL", fmt.Errorf("subscription update interval must be at least one hour"), nil)
+	}
 	raw.Remarks = subscription.Remarks
 	raw.Address = subscription.Address
 	raw.AutoSelect = subscription.AutoSelect
+	raw.AutoUpdateMode = subscription.AutoUpdateMode
+	raw.AutoUpdateIntervalHour = subscription.AutoUpdateIntervalHour
 	return configure.SetSubscription(subscription.ID-1, raw)
 }
 

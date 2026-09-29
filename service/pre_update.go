@@ -12,37 +12,70 @@ import (
 	"github.com/v2rayA/v2rayA/server/service"
 )
 
-func updateSubscriptions() {
+const subscriptionUpdateCheckInterval = time.Minute
+
+var subscriptionUpdateMu sync.Mutex
+
+func subscriptionShouldUpdate(sub configure.SubscriptionRaw, now time.Time, serviceStart bool) bool {
+	switch sub.AutoUpdateMode {
+	case configure.AutoUpdate:
+		return serviceStart
+	case configure.AutoUpdateAtIntervals:
+		if sub.AutoUpdateIntervalHour < 1 {
+			return false
+		}
+		if sub.LastUpdateAttemptAt == "" {
+			return true
+		}
+		lastAttempt, err := time.Parse(time.RFC3339, sub.LastUpdateAttemptAt)
+		return err != nil || !now.Before(lastAttempt.Add(time.Duration(sub.AutoUpdateIntervalHour)*time.Hour))
+	default:
+		return false
+	}
+}
+
+func updateSubscriptions(serviceStart bool) {
+	subscriptionUpdateMu.Lock()
+	defer subscriptionUpdateMu.Unlock()
 	subs := configure.GetSubscriptions()
-	lenSubs := len(subs)
+	ids := make([]int64, 0, len(subs))
+	now := time.Now()
+	for _, sub := range subs {
+		if subscriptionShouldUpdate(sub, now, serviceStart) {
+			ids = append(ids, sub.DatabaseID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
 	control := make(chan struct{}, 2) // concurrency limit: update 2 subscriptions at a time
 	// Disconnect from subscriptions before auto-selecting servers from them
 	// to limit the number of connected servers and avoid hitting the limit
 	shouldDisconnect := true
-	err := service.AutoSelectServersFromSubscriptions(shouldDisconnect)
+	err := service.AutoSelectServersFromSubscriptionIDs(ids, shouldDisconnect)
 	if err != nil {
 		log.Error("[AutoSelect] Failed to disconnect servers from subscriptions -- err: %v", err)
 	}
 	wg := new(sync.WaitGroup)
-	for i := 0; i < lenSubs; i++ {
+	for _, id := range ids {
 		wg.Add(1)
-		go func(i int) {
+		go func(id int64) {
 			control <- struct{}{}
 			defer wg.Done()
 			defer func() { <-control }()
-			runSubscriptionUpdate(i, func() {
-				err := service.UpdateSubscription(i, false)
+			runSubscriptionUpdate(int(id), func() {
+				err := service.UpdateSubscriptionByID(id)
 				if err != nil {
-					log.Info("[AutoUpdate] Subscriptions: Failed to update subscription -- ID: %d, err: %v", i, err)
+					log.Info("[AutoUpdate] Subscriptions: Failed to update subscription -- ID: %d, err: %v", id, err)
 				} else {
-					log.Info("[AutoUpdate] Subscriptions: Complete updating subscription -- ID: %d, Address: %s", i, subs[i].Address)
+					log.Info("[AutoUpdate] Subscriptions: Complete updating subscription -- ID: %d", id)
 				}
 			})
-		}(i)
+		}(id)
 	}
 	wg.Wait()
 	shouldDisconnect = false
-	err2 := service.AutoSelectServersFromSubscriptions(shouldDisconnect)
+	err2 := service.AutoSelectServersFromSubscriptionIDs(ids, shouldDisconnect)
 	if err2 != nil {
 		log.Error("[AutoSelect] Failed to auto-select servers from subscriptions -- err: %v", err2)
 	}
@@ -62,7 +95,7 @@ func runSubscriptionUpdate(index int, update func()) (panicked bool) {
 
 func initUpdatingTicker() {
 	conf.TickerUpdateGFWList = time.NewTicker(24 * time.Hour * 365 * 100)
-	conf.TickerUpdateSubscription = time.NewTicker(24 * time.Hour * 365 * 100)
+	conf.TickerUpdateSubscription = time.NewTicker(subscriptionUpdateCheckInterval)
 	go func() {
 		for range conf.TickerUpdateGFWList.C {
 			version, err := dat.CheckAndUpdateGFWList("")
@@ -76,7 +109,7 @@ func initUpdatingTicker() {
 	}()
 	go func() {
 		for range conf.TickerUpdateSubscription.C {
-			updateSubscriptions()
+			updateSubscriptions(false)
 		}
 	}()
 }
@@ -114,15 +147,8 @@ func checkUpdate() {
 		}
 	}
 
-	// check for subscription updates
-	if setting.SubscriptionAutoUpdateMode == configure.AutoUpdate ||
-		setting.SubscriptionAutoUpdateMode == configure.AutoUpdateAtIntervals {
-
-		if setting.SubscriptionAutoUpdateMode == configure.AutoUpdateAtIntervals {
-			conf.TickerUpdateSubscription.Reset(configure.IntervalHours(setting.SubscriptionAutoUpdateIntervalHour))
-		}
-		go updateSubscriptions()
-	}
+	// Check each subscription's schedule without changing the legacy global setting.
+	go updateSubscriptions(true)
 	// check for server updates
 	go func() {
 		f := func() {

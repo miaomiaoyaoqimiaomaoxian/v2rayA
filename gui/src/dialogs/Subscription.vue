@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// Edit a subscription: its address, remarks and whether new nodes are
-// connected automatically after an update. Saves with PATCH
+// Edit a subscription's address, remarks and update settings. Saves with PATCH
 // /subscription and resolves true.
 import { reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -8,6 +7,7 @@ import { patchSubscription } from "@/api";
 import { errorText } from "@/api/errors";
 import type { TouchSubscription } from "@/api/types";
 import { useNotify } from "@/composables/useNotify";
+import { subscriptionUpdateModes } from "@/views/settings/options";
 
 defineOptions({ name: "SubscriptionDialog" });
 const props = defineProps<{ subscription: TouchSubscription }>();
@@ -16,11 +16,25 @@ const { t } = useI18n();
 const notify = useNotify();
 
 // the old page sent the row with its servers emptied
-const form = reactive({ ...props.subscription, servers: [] });
+const form = reactive({
+  ...props.subscription,
+  autoUpdateMode: props.subscription.autoUpdateMode ?? "none",
+  autoUpdateIntervalHour: props.subscription.autoUpdateIntervalHour ?? 0,
+  servers: [],
+});
 const saving = ref(false);
+const modes = subscriptionUpdateModes(t);
 
 async function save() {
   if (saving.value) return;
+  if (
+    form.autoUpdateMode === "auto_update_at_intervals" &&
+    (!Number.isInteger(Number(form.autoUpdateIntervalHour)) ||
+      Number(form.autoUpdateIntervalHour) < 1)
+  ) {
+    notify.warning(t("configureServer.required"));
+    return;
+  }
   saving.value = true;
   try {
     await patchSubscription({ subscription: form });
@@ -57,6 +71,19 @@ async function save() {
         v-model="form.autoSelect"
         :label="t('subscription.autoSelect')"
         hide-details
+      />
+      <v-select
+        v-model="form.autoUpdateMode"
+        :label="t('setting.autoUpdateSub')"
+        :items="modes"
+      />
+      <v-text-field
+        v-if="form.autoUpdateMode === 'auto_update_at_intervals'"
+        v-model.number="form.autoUpdateIntervalHour"
+        type="number"
+        min="1"
+        step="1"
+        :label="t('setting.options.updateSubAtIntervals')"
       />
     </v-card-text>
     <v-card-actions class="px-6 pb-4">

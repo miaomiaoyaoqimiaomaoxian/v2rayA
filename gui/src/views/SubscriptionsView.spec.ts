@@ -52,7 +52,7 @@ describe("subscriptions page", () => {
     ).toBe(true);
   });
   test("its buttons open the settings and the import dialogs", async () => {
-    await button("Auto-update").trigger("click");
+    await button("Mode when Update Subscriptions and GFWList").trigger("click");
     expect(dialogState.stack.at(-1)?.component).toBe(SubscriptionSettings);
     closeAllDialogs();
     await flushPromises();

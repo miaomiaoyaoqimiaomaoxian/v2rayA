@@ -40,6 +40,8 @@ export interface TouchSubscription {
   info: string;
   servers: TouchServer[];
   autoSelect: boolean;
+  autoUpdateMode?: "none" | "auto_update" | "auto_update_at_intervals";
+  autoUpdateIntervalHour?: number;
 }
 
 /** touch.Touch */

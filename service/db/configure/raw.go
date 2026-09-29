@@ -13,12 +13,16 @@ type ServerRaw struct {
 }
 
 type SubscriptionRaw struct {
-	Remarks string      `json:"remarks,omitempty"`
-	Address string      `json:"address"`
-	Status  string      `json:"status"` //update time, error info, etc.
-	Servers []ServerRaw `json:"servers"`
-	Info    string      `json:"info"` // maybe include some info from provider
-	AutoSelect bool     `json:"autoSelect"`
+	DatabaseID             int64          `json:"_databaseId"`
+	Remarks                string         `json:"remarks,omitempty"`
+	Address                string         `json:"address"`
+	Status                 string         `json:"status"` //update time, error info, etc.
+	Servers                []ServerRaw    `json:"servers"`
+	Info                   string         `json:"info"` // maybe include some info from provider
+	AutoSelect             bool           `json:"autoSelect"`
+	AutoUpdateMode         AutoUpdateMode `json:"autoUpdateMode"`
+	AutoUpdateIntervalHour int            `json:"autoUpdateIntervalHour"`
+	LastUpdateAttemptAt    string         `json:"lastUpdateAttemptAt,omitempty"`
 }
 
 func Bytes2SubscriptionRaw(b []byte) (*SubscriptionRaw, error) {

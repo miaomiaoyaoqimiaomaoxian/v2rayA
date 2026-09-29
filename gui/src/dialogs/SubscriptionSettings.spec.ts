@@ -38,17 +38,11 @@ beforeEach(async () => {
   await flushPromises();
 });
 afterEach(() => wrapper.unmount());
-test("loads subscription values and saves all three changes without losing other settings", async () => {
+test("saves the update proxy mode without losing other settings", async () => {
   const selects = wrapper.findAllComponents(VSelect);
-  expect(selects[0].props("modelValue")).toBe("auto_update");
-  expect(selects[1].props("modelValue")).toBe("pac");
-  selects[0].vm.$emit("update:modelValue", "auto_update_at_intervals");
-  await flushPromises();
-  expect(
-    (wrapper.get('input[type="number"]').element as HTMLInputElement).value,
-  ).toBe("6");
-  await wrapper.get('input[type="number"]').setValue("12");
-  selects[1].vm.$emit("update:modelValue", "proxy");
+  expect(selects).toHaveLength(1);
+  expect(selects[0].props("modelValue")).toBe("pac");
+  selects[0].vm.$emit("update:modelValue", "proxy");
   await wrapper
     .findAll("button")
     .find((b) => b.text() === "Save")!
@@ -57,25 +51,9 @@ test("loads subscription values and saves all three changes without losing other
   expect(putSetting).toHaveBeenCalledWith(
     {
       ...loaded,
-      subscriptionAutoUpdateMode: "auto_update_at_intervals",
-      subscriptionAutoUpdateIntervalHour: 12,
       proxyModeWhenSubscribe: "proxy",
     },
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
   expect(wrapper.emitted("close")).toEqual([[true]]);
-});
-test("does not save an empty or nonpositive update interval", async () => {
-  wrapper
-    .findAllComponents(VSelect)[0]
-    .vm.$emit("update:modelValue", "auto_update_at_intervals");
-  await flushPromises();
-  await wrapper.get('input[type="number"]').setValue("0");
-  await wrapper
-    .findAll("button")
-    .find((b) => b.text() === "Save")!
-    .trigger("click");
-  await flushPromises();
-  expect(putSetting).not.toHaveBeenCalled();
-  expect(wrapper.emitted("close")).toBeUndefined();
 });
