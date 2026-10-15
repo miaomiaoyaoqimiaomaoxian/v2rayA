@@ -16,6 +16,7 @@ import PluginCard from "./plugins/PluginCard.vue";
 import PluginDetailDialog from "./plugins/PluginDetailDialog.vue";
 import PluginManageDialog from "./plugins/PluginManageDialog.vue";
 import PluginPolicyDialog from "./plugins/PluginPolicyDialog.vue";
+import PluginSettingsDialog from "./plugins/PluginSettingsDialog.vue";
 
 defineOptions({ name: "PluginsView" });
 const { t } = useI18n();
@@ -33,11 +34,19 @@ const {
   testing,
   busy,
   logState,
+  alerts,
+  proxyImport,
+  proxyImportActive,
+  watchdog,
+  watchdogRunning,
   sync,
 } = model;
 const disabled = computed(() => busy.value || loading.value);
 
 const managing = ref(false);
+const settingsOpen = ref(false);
+/** 分组名 -> 原因。空表示没有分组彻底不可用。 */
+const alertEntries = computed(() => Object.entries(alerts.value ?? {}));
 
 onMounted(sync);
 defineExpose({ sync });
@@ -108,6 +117,31 @@ async function setLevel(level: string) {
   }
 }
 
+async function saveProxyImport(
+  settings: Parameters<typeof model.saveProxyImport>[0],
+) {
+  try {
+    await model.saveProxyImport(settings);
+    notify.success(t("plugins.policySaved"));
+  } catch (err) {
+    notify.warning(errorText(err));
+  }
+}
+
+async function saveWatchdog(
+  settings: Parameters<typeof model.saveWatchdog>[0],
+) {
+  try {
+    await model.saveWatchdog(settings);
+    notify.success(t("plugins.policySaved"));
+    // The watchdog loop may have started or stopped; refresh so the banner
+    // and the switch state match reality.
+    await sync().catch(() => {});
+  } catch (err) {
+    notify.warning(errorText(err));
+  }
+}
+
 function uninstallByName(name: string) {
   const p = plugins.value.find((x) => x.name === name);
   if (p) void uninstall(p);
@@ -140,6 +174,13 @@ function notYet(action: string) {
         @click="managing = true"
         >{{ t("plugins.manage") }}</v-btn
       >
+      <v-btn
+        variant="text"
+        :prepend-icon="mdiCogOutline"
+        :disabled="disabled"
+        @click="settingsOpen = true"
+        >{{ t("plugins.settings") }}</v-btn
+      >
     </div>
 
     <v-alert v-if="loadError" type="error" variant="tonal" class="mb-4">
@@ -149,6 +190,41 @@ function notYet(action: string) {
           t("operations.update")
         }}</v-btn></template
       >
+    </v-alert>
+
+    <!--
+      A group whose every candidate is unreachable is the case worth
+      interrupting for: nothing else on the page shows it, and the user asked
+      to be told when a node dies for good rather than discovering it as a
+      silent loss of access.
+    -->
+    <v-alert
+      v-if="alertEntries.length"
+      type="error"
+      variant="tonal"
+      class="mb-4"
+    >
+      <div class="text-subtitle-2 mb-1">
+        {{ t("plugins.allNodesDown", { count: alertEntries.length }) }}
+      </div>
+      <div v-for="[group, reason] in alertEntries" :key="group">
+        {{ group }} — {{ reason }}
+      </div>
+    </v-alert>
+
+    <!--
+      With the watchdog off the plugin still picks a node at startup, but
+      nothing notices when that node dies later, so failover silently does not
+      happen. Say so rather than letting the user assume it works.
+    -->
+    <v-alert
+      v-if="watchdog && !watchdog.enabled"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mb-4"
+    >
+      {{ t("plugins.watchdogOffWarning") }}
     </v-alert>
 
     <v-skeleton-loader
@@ -226,6 +302,18 @@ function notYet(action: string) {
       :busy="busy"
       @close="editing = null"
       @save="model.savePolicy(editing.outbound, $event)"
+    />
+
+    <PluginSettingsDialog
+      v-if="settingsOpen"
+      :proxy-import="proxyImport"
+      :proxy-import-active="proxyImportActive"
+      :watchdog="watchdog"
+      :watchdog-running="watchdogRunning"
+      :busy="busy"
+      @close="settingsOpen = false"
+      @save-proxy-import="saveProxyImport"
+      @save-watchdog="saveWatchdog"
     />
   </div>
 </template>

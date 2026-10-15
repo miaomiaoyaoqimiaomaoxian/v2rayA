@@ -152,7 +152,13 @@ func (m *CoreProcessManager) setupTransparentProxy(p *Process, generation uint64
 		}); err != nil {
 			return err
 		}
-		return m.mutateHost(p, generation, func() error { return runHook("post-start") })
+		if err = m.mutateHost(p, generation, func() error { return runHook("post-start") }); err != nil {
+			return err
+		}
+		// The core is serving traffic now, so a plugin that probes through
+		// the local ports will succeed from here on.
+		NotifyPlugins(EventCoreStarted)
+		return nil
 	}
 	return
 }
@@ -276,6 +282,10 @@ func (m *CoreProcessManager) stop(saveRunning bool) {
 
 	// Notify connected frontend clients that the proxy is no longer running.
 	ApiFeed.ProductMessage("running_state", map[string]interface{}{"running": false, "networkPaused": false})
+
+	// The local ports are gone, so a plugin probing through them would now
+	// report a failure that is really just "the core stopped".
+	NotifyPlugins(EventCoreStopped)
 }
 
 // MarkShuttingDown records that the service is exiting: a core that dies

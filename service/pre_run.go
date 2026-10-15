@@ -11,6 +11,7 @@ import (
 	"github.com/v2rayA/v2rayA/kernel/ipforward"
 	"github.com/v2rayA/v2rayA/kernel/v2ray"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
+	"github.com/v2rayA/v2rayA/pluginhost"
 	"github.com/v2rayA/v2rayA/server/router"
 	"github.com/v2rayA/v2rayA/server/service"
 )
@@ -92,6 +93,9 @@ func run() error {
 				log.Warn("Connect: %v", e)
 			}
 		}
+		// Plugins start after the core is up: they probe through it, and a
+		// watchdog that runs before the ports exist only sees failures.
+		pluginhost.Start()
 		// Start.
 		err := v2ray.UpdateV2RayConfig()
 		if err != nil {
@@ -118,7 +122,12 @@ func run() error {
 }
 
 func waitForShutdown(errch <-chan error, cleanup func()) (err error) {
-	defer cleanup()
+	defer func() {
+		// Plugins stop before the core so a watchdog in flight is cancelled
+		// while its ports still exist.
+		pluginhost.StopAll()
+		cleanup()
+	}()
 	if err = <-errch; err != nil {
 		return fmt.Errorf("run: %w", err)
 	}

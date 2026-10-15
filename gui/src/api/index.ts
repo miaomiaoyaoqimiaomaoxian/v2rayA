@@ -217,11 +217,18 @@ export interface PluginGroupStatus {
   maxSwitches: number;
   nodes: PluginNodeStatus[];
 }
+/**
+ * A group the watchdog gave up on: every candidate is unreachable and there
+ * was nothing left to switch to. Surfaced so an outage is visible on the page
+ * rather than only in the log.
+ */
+export interface PluginGroupAlerts {
+  groups: { outbound: string; status: PluginGroupStatus }[];
+  /** outbound -> reason; absent when nothing is alerting */
+  alerts?: Record<string, string>;
+}
 export const getPluginGroups = () =>
-  call<{ groups: { outbound: string; status: PluginGroupStatus }[] }>({
-    url: "pluginGroups",
-    method: "get",
-  });
+  call<PluginGroupAlerts>({ url: "pluginGroups", method: "get" });
 /** The backend wraps each group as {outbound, status}; flatten to just status. */
 export async function getPluginGroupStatuses(): Promise<PluginGroupStatus[]> {
   const { groups } = await getPluginGroups();
@@ -258,6 +265,63 @@ export const getPluginLog = () =>
   call<PluginLogResponse>({ url: "pluginLog", method: "get" });
 export const putPluginLog = (body: { level: string }) =>
   call<PluginLogResponse>({ url: "pluginLog", method: "put", data: body });
+
+/**
+ * proxyimport: fetch subscriptions through v2rayA's own proxy.
+ *
+ * v2rayA has a "proxy when importing subscriptions" setting, but a transparent
+ * proxy (TUN on Windows) forces it to a direct client, so a subscription
+ * reachable only through the proxy cannot be imported at all. This plugin
+ * overrides that decision; `active` reports whether it is actually steering
+ * fetches right now, which is false when the plugin is disabled or the switch
+ * is off.
+ */
+export interface PluginProxyImportSettings {
+  preferProxy: boolean;
+  probeDirectFirst: boolean;
+  timeoutSeconds: number;
+}
+export interface PluginProxyImportResponse {
+  settings: PluginProxyImportSettings;
+  active: boolean;
+}
+export const getPluginProxyImport = () =>
+  call<PluginProxyImportResponse>({
+    url: "pluginProxyImport",
+    method: "get",
+  });
+export const putPluginProxyImport = (body: PluginProxyImportSettings) =>
+  call<PluginProxyImportResponse>({
+    url: "pluginProxyImport",
+    method: "put",
+    data: body,
+  });
+
+/**
+ * autogroup's watchdog: what actually drives automatic switching.
+ *
+ * Without it the plugin still picks a node at startup, but a node that dies
+ * later is never noticed, because nothing reports the failure. Turning it off
+ * therefore leaves failover switched off too — the UI says so rather than
+ * letting the user assume failover is running.
+ */
+export interface PluginWatchdogSettings {
+  intervalSeconds: number;
+  probeUrl: string;
+  enabled: boolean;
+}
+export interface PluginWatchdogResponse {
+  settings: PluginWatchdogSettings;
+  running: boolean;
+}
+export const getPluginWatchdog = () =>
+  call<PluginWatchdogResponse>({ url: "pluginWatchdog", method: "get" });
+export const putPluginWatchdog = (body: PluginWatchdogSettings) =>
+  call<PluginWatchdogResponse>({
+    url: "pluginWatchdog",
+    method: "put",
+    data: body,
+  });
 
 // ---- logs ------------------------------------------------------------------------
 /** GET /logger answers plain text from the byte offset `skip`, not the envelope. */

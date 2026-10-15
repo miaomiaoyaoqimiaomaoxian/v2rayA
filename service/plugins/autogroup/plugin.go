@@ -12,6 +12,7 @@ package autogroup
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/v2rayA/v2rayA/db"
 	"github.com/v2rayA/v2rayA/db/configure"
@@ -52,6 +53,8 @@ type Plugin struct {
 	mu sync.Mutex
 	// pilot 是启用态下的控制器；停用时为 nil，表示插件不介入。
 	pilot *AutoPilot
+	// watchdog 周期性验证各分组节点是否还能带流量，并驱动切换。
+	watchdog *Watchdog
 	// unsubscribes 保存事件订阅的取消函数，停用时逐一调用。
 	unsubscribes []func()
 	// logger 是决策日志记录器；停用时关闭文件句柄。
@@ -96,6 +99,14 @@ func (p *Plugin) OnStart(ctx *plugin.Context) error {
 	pilot := NewAutoPilot(ProbeNodes, ApplySelection)
 	pilot.SetLogger(logger)
 
+	// 巡检是自动切换的实际驱动方：没有它，失败计数永远停在 0。
+	if WatchdogEnabled() {
+		interval, probeURL := WatchdogConfig()
+		w := NewWatchdog(pilot, interval, probeURL)
+		w.Start()
+		p.watchdog = w
+	}
+
 	p.unsubscribes = []func(){
 		ctx.Events.Subscribe(plugin.EventCoreStarted, func(interface{}) {
 			p.onCoreStarted()
@@ -134,6 +145,11 @@ func loggerPathOrNone(l *Logger) string {
 func (p *Plugin) OnStop(ctx *plugin.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// 先停巡检：它可能正在驱动一次切换，先让它停下来再丢控制器。
+	if p.watchdog != nil {
+		p.watchdog.Stop()
+		p.watchdog = nil
+	}
 	for _, unsub := range p.unsubscribes {
 		unsub()
 	}
@@ -255,3 +271,74 @@ func Groups() []Group {
 	}
 	return out
 }
+
+// Watchdog 返回健康巡检器；未启用巡检时为 nil。
+func (p *Plugin) Watchdog() *Watchdog {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.watchdog
+}
+
+// ReloadWatchdog 重启健康巡检，让改过的间隔与探测地址立即生效，
+// 不必重启 v2rayA。插件停用时是空操作。
+func (p *Plugin) ReloadWatchdog() {
+	p.mu.Lock()
+	pilot := p.pilot
+	if p.watchdog != nil {
+		p.watchdog.Stop()
+		p.watchdog = nil
+	}
+	p.mu.Unlock()
+	if pilot == nil || !WatchdogEnabled() {
+		return
+	}
+	interval, probeURL := WatchdogConfig()
+	w := NewWatchdog(pilot, interval, probeURL)
+	w.Start()
+	p.mu.Lock()
+	p.watchdog = w
+	p.mu.Unlock()
+}
+
+// WatchdogSettings 配置健康巡检。
+type WatchdogSettings struct {
+	// IntervalSeconds 是两轮巡检的间隔；0 表示用默认值。
+	IntervalSeconds int `json:"intervalSeconds"`
+	// ProbeURL 是探测地址；空表示用默认值。
+	ProbeURL string `json:"probeUrl"`
+	// Enabled 为 false 时插件照常挑选节点，但不做周期性巡检，
+	// 也就不会在节点失效后自动切换。
+	Enabled bool `json:"enabled"`
+}
+
+const watchdogSettingsKey = "watchdog"
+
+func defaultWatchdogSettings() WatchdogSettings {
+	return WatchdogSettings{Enabled: true, IntervalSeconds: int(defaultInterval / time.Second)}
+}
+
+// LoadWatchdogSettings 读取巡检配置，缺省启用。
+func LoadWatchdogSettings() WatchdogSettings {
+	s := defaultWatchdogSettings()
+	_ = db.Get(logSettingsBucket, watchdogSettingsKey, &s)
+	return s
+}
+
+// SaveWatchdogSettings 持久化巡检配置。
+func SaveWatchdogSettings(s WatchdogSettings) error {
+	return db.Set(logSettingsBucket, watchdogSettingsKey, s)
+}
+
+// WatchdogConfig 返回巡检要用的间隔与探测地址。调用方先看
+// WatchdogSettings.Enabled 决定要不要启动循环，这样"停用"意味着
+// 根本没有 goroutine、没有请求，而不是一个什么都不做的循环。
+func WatchdogConfig() (interval time.Duration, probeURL string) {
+	s := LoadWatchdogSettings()
+	if s.IntervalSeconds <= 0 {
+		s.IntervalSeconds = int(defaultInterval / time.Second)
+	}
+	return time.Duration(s.IntervalSeconds) * time.Second, s.ProbeURL
+}
+
+// WatchdogEnabled 报告周期性巡检是否开启。
+func WatchdogEnabled() bool { return LoadWatchdogSettings().Enabled }

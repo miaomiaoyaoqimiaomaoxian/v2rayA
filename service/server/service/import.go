@@ -207,7 +207,9 @@ func ImportSubscription(url string) (err error) {
 				source = u.String()
 			}
 		}
-		c := httpClient.GetHttpClientAutomatically()
+		// ForSubscription honours a plugin's choice of client, which is how a
+		// subscription reachable only through the proxy gets imported.
+		c := httpClient.GetHttpClientForSubscription()
 		c.Timeout = 90 * time.Second
 		// assign, do not redeclare: a shadowed err here made the
 		// AppendSubscriptions failure below vanish behind a nil return

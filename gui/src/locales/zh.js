@@ -56,6 +56,31 @@ export default {
       warn: "警告",
       error: "仅错误",
     },
+    settings: "插件设置",
+    settingsTitle: "插件设置",
+    allNodesDown: "{count} 个分组没有可用节点",
+    proxyImportTitle: "通过代理导入订阅",
+    proxyImportHint:
+      "有些订阅只能通过代理访问。而 v2rayA 自带的这个选项在透明代理（如 TUN）开启时会被忽略，于是这些订阅导入失败。本插件改为经本机代理抓取它们。",
+    proxyImportSwitch: "通过代理抓取订阅",
+    proxyImportSwitchHint: "对手动导入与定时更新都生效。",
+    proxyImportDirectFirst: "先尝试直连",
+    proxyImportDirectFirstHint: "直连可用的订阅就不绕代理那一跳。",
+    proxyImportTimeout: "超时（秒）",
+    proxyImportInactive:
+      "开关已打开，但 proxyimport 插件处于停用状态，所以不会有任何变化——需要先启用该插件。",
+    watchdogTitle: "健康巡检",
+    watchdogHint:
+      "经本机代理探测各分组的节点是否还能带流量，不能用就切走。这才是启动后自动切换真正生效的地方。",
+    watchdogEnabled: "后台探测分组",
+    watchdogEnabledHint:
+      "关掉之后插件仍会在启动时挑一个节点，但那个节点之后挂掉不会被发现。",
+    watchdogInterval: "探测间隔（秒）",
+    watchdogIntervalHint: "越小恢复越快，请求也越多。",
+    watchdogProbeUrl: "探测地址",
+    watchdogProbeUrlHint: "经该分组自己的节点访问。留空则用默认值。",
+    watchdogOffWarning:
+      "健康巡检已关闭，因此自动切换不会运行：启动后失效的节点会一直被使用。",
   },
   onboarding: {
     title: "使用教程",

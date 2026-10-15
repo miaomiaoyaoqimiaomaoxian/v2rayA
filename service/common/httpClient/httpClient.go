@@ -51,6 +51,39 @@ func GetHttpClientWithv2rayAPac() (client *http.Client, err error) {
 	return GetHttpClientWithProxy("http://" + net.JoinHostPort(host, strconv.Itoa(configure.GetPortsNotNil().HttpWithPac)))
 }
 
+// subscriptionClientOverride lets a plugin choose the client for
+// subscription fetches. It is nil unless a plugin installed one, so the code
+// below behaves exactly as it did before plugins existed.
+//
+// The signature is deliberately loose (any) to keep this package free of any
+// plugin import: a plugin returns an *http.Client, which the caller type
+// asserts. That way removing the plugin framework leaves only this nil check.
+var subscriptionClientOverride func() (any, bool)
+
+// SetSubscriptionClientOverride installs the hook. Passing nil restores the
+// default behaviour.
+func SetSubscriptionClientOverride(f func() (any, bool)) {
+	subscriptionClientOverride = f
+}
+
+// GetHttpClientForSubscription returns the client a subscription fetch should
+// use, honouring a plugin's choice first.
+//
+// The automatic path below cannot serve every case: while a transparent proxy
+// is on (TUN on Windows, for instance) it deliberately returns a direct
+// client, which is right for latency but leaves subscriptions that are only
+// reachable through the proxy unimportable. A plugin may override that.
+func GetHttpClientForSubscription() *http.Client {
+	if subscriptionClientOverride != nil {
+		if v, ok := subscriptionClientOverride(); ok {
+			if c, isClient := v.(*http.Client); isClient && c != nil {
+				return c
+			}
+		}
+	}
+	return GetHttpClientAutomatically()
+}
+
 func GetHttpClientAutomatically() (c *http.Client) {
 	setting := configure.GetSettingNotNil()
 	if !v2ray.ProcessManager.Running() || configure.GetConnectedServers() == nil || v2ray.IsTransparentOn(setting) {

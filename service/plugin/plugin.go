@@ -317,7 +317,7 @@ func (m *Manager) Uninstall(name string) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := db.BucketClear("plugin." + name); err != nil {
+	if err := db.BucketClear(settingsBucket(name)); err != nil {
 		return fmt.Errorf("plugin: cannot clear data of %q: %w", name, err)
 	}
 	_ = db.Delete("plugins", name)
@@ -498,4 +498,25 @@ func validName(name string) bool {
 		}
 	}
 	return name != ""
+}
+
+// ---- 插件私有配置 ----
+//
+// 每个插件有一个属于自己的 bucket（plugin.<name>），卸载时整体清除。
+// 放在框架里而不是让插件各自找地方存，是为了让"卸载会删干净所有数据"
+// 成为框架的一条保证，而不是每个插件都要自己记得做。
+
+func settingsBucket(name string) string { return "plugin." + name }
+
+// GetSetting 读取插件自己的一个配置项。未设置时返回 false。
+func GetSetting(name, key string, out interface{}) bool {
+	if err := db.Get(settingsBucket(name), key, out); err != nil {
+		return false
+	}
+	return true
+}
+
+// SetSetting 写入插件自己的一个配置项。
+func SetSetting(name, key string, value interface{}) error {
+	return db.Set(settingsBucket(name), key, value)
 }

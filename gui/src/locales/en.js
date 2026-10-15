@@ -61,6 +61,33 @@ export default {
       warn: "Warnings",
       error: "Errors only",
     },
+    settings: "Plugin settings",
+    settingsTitle: "Plugin settings",
+    allNodesDown: "{count} group(s) have no usable node",
+    proxyImportTitle: "Import subscriptions through the proxy",
+    proxyImportHint:
+      "Some subscriptions are only reachable through the proxy. v2rayA's own setting for this is ignored while a transparent proxy such as TUN is on, so those subscriptions fail to import. This plugin fetches them through the local proxy instead.",
+    proxyImportSwitch: "Fetch subscriptions through the proxy",
+    proxyImportSwitchHint: "Applies to importing and to scheduled updates.",
+    proxyImportDirectFirst: "Try the direct route first",
+    proxyImportDirectFirstHint:
+      "Keeps a directly reachable subscription off the proxy hop.",
+    proxyImportTimeout: "Timeout (seconds)",
+    proxyImportInactive:
+      "The switch is on but the plugin is stopped, so nothing changes until the proxyimport plugin is enabled.",
+    watchdogTitle: "Health watchdog",
+    watchdogHint:
+      "Probes each group's node over the local proxy and switches away when it stops working. This is what makes automatic switching actually happen after the initial choice.",
+    watchdogEnabled: "Probe groups in the background",
+    watchdogEnabledHint:
+      "With this off the plugin still picks a node at startup, but a node that dies later is never noticed.",
+    watchdogInterval: "Interval (seconds)",
+    watchdogIntervalHint: "Lower means faster recovery and more requests.",
+    watchdogProbeUrl: "Probe address",
+    watchdogProbeUrlHint:
+      "Checked through the group's own node. Leave empty for the default.",
+    watchdogOffWarning:
+      "The health watchdog is off, so automatic switching will not run: a node that dies after startup stays in use.",
   },
   onboarding: {
     title: "Quick tutorial",

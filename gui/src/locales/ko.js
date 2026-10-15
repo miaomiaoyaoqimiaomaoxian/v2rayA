@@ -61,6 +61,33 @@ export default {
       warn: "경고",
       error: "오류만",
     },
+    settings: "플러그인 설정",
+    settingsTitle: "플러그인 설정",
+    allNodesDown: "사용 가능한 노드가 없는 그룹 {count}개",
+    proxyImportTitle: "프록시로 구독 가져오기",
+    proxyImportHint:
+      "일부 구독은 프록시로만 접근할 수 있습니다. TUN 같은 투명 프록시가 켜져 있으면 v2rayA 자체 설정이 무시되어 그 구독을 가져오지 못합니다. 이 플러그인은 로컬 프록시를 통해 가져옵니다.",
+    proxyImportSwitch: "구독을 프록시로 가져오기",
+    proxyImportSwitchHint: "가져오기와 예약 업데이트 모두에 적용됩니다.",
+    proxyImportDirectFirst: "직접 연결을 먼저 시도",
+    proxyImportDirectFirstHint:
+      "직접 연결 가능한 구독은 프록시 홉을 쓰지 않습니다.",
+    proxyImportTimeout: "제한 시간(초)",
+    proxyImportInactive:
+      "스위치는 켜져 있지만 proxyimport 플러그인이 중지 상태라, 플러그인을 켜기 전까지는 변화가 없습니다.",
+    watchdogTitle: "상태 감시",
+    watchdogHint:
+      "각 그룹의 노드를 로컬 프록시로 점검하고, 동작하지 않으면 다른 노드로 바꿉니다. 초기 선택 이후 실제로 자동 전환이 일어나게 하는 부분입니다.",
+    watchdogEnabled: "백그라운드에서 그룹 점검",
+    watchdogEnabledHint:
+      "끄면 플러그인은 시작할 때 노드를 고르지만, 그 노드가 나중에 죽는 것은 발견하지 못합니다.",
+    watchdogInterval: "간격(초)",
+    watchdogIntervalHint: "작을수록 복구가 빠르고 요청도 많아집니다.",
+    watchdogProbeUrl: "점검 주소",
+    watchdogProbeUrlHint:
+      "해당 그룹의 노드로 접근합니다. 비워 두면 기본값을 씁니다.",
+    watchdogOffWarning:
+      "상태 감시가 꺼져 있어 자동 전환이 동작하지 않습니다. 시작 후 죽은 노드가 계속 쓰입니다.",
   },
   onboarding: {
     title: "사용 안내",

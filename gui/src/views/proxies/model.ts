@@ -1,6 +1,7 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { deleteTouch, getSharingAddress, putOutboundConnections } from "@/api";
+import { beginTask, setTaskProgress } from "@/composables/useBackgroundTask";
 import { errorText } from "@/api/errors";
 import { copyText } from "@/lib/clipboard";
 import { exportName, saveText } from "@/lib/download";
@@ -155,14 +156,39 @@ export function useProxies() {
       ? [...new Set([...selectedKeys.value, key])]
       : selectedKeys.value.filter((k) => k !== key);
   }
-  async function run(action: () => Promise<unknown>) {
+  /**
+   * run executes a mutating action behind the busy guard.
+   *
+   * It also registers a named background task so the top progress bar
+   * describes this action instead of merely "a request is in flight".
+   * Actions that can report progress pass one; the rest stay indeterminate,
+   * which is what the bar showed before this existed.
+   */
+  async function run(
+    action: () => Promise<unknown>,
+    opts: { label?: string; total?: number } = {},
+  ) {
     if (busy.value) return;
     busy.value = true;
+    const key = `proxies:${opts.label ?? "working"}`;
+    const task = opts.label ? beginTask(key, opts.label) : undefined;
+    let done = 0;
+    const tick = () => {
+      done += 1;
+      if (!task) return;
+      const p =
+        opts.total && opts.total > 0
+          ? Math.min(1, done / opts.total)
+          : undefined;
+      setTaskProgress(key, p);
+    };
+    tick();
     try {
       await action();
     } catch (err) {
       notify.warning(errorText(err));
     } finally {
+      task?.end();
       busy.value = false;
     }
   }
@@ -309,48 +335,55 @@ export function useProxies() {
     subscription: TouchSubscription,
     action: SubscriptionAction,
   ) {
-    await run(async () => {
-      if (action === "share") {
-        const link = await subscriptionsModel.sharingLink(subscription);
-        open(
-          SharingDialog,
-          {
-            title: t("sharing.subscriptionTitle"),
-            link,
-            name: subscription.remarks || subscription.host,
-            type: subscription._type,
-          },
-          { width: 420 },
-        );
-        return;
-      }
-      if (action === "update") {
-        await subscriptionsModel.update(subscription);
-        notify.success(t("subscription.updated"));
-      }
-      if (
-        action === "edit" &&
-        !(await open<boolean>(
-          SubscriptionDialog,
-          { subscription },
-          { width: 480 },
-        ).result)
-      )
-        return;
-      if (action === "delete") {
+    // Name the task after what it does, so the top bar reads
+    // "updating <name>" instead of the generic running check. Actions that
+    // only open a dialog do not need the bar at all, so they pass no label.
+    const label = action === "update" ? "updateSubscription" : undefined;
+    await run(
+      async () => {
+        if (action === "share") {
+          const link = await subscriptionsModel.sharingLink(subscription);
+          open(
+            SharingDialog,
+            {
+              title: t("sharing.subscriptionTitle"),
+              link,
+              name: subscription.remarks || subscription.host,
+              type: subscription._type,
+            },
+            { width: 420 },
+          );
+          return;
+        }
+        if (action === "update") {
+          await subscriptionsModel.update(subscription);
+          notify.success(t("subscription.updated"));
+        }
         if (
-          !(await confirm({
-            title: t("delete.title"),
-            message: t("delete.message", 1),
-            confirmText: t("operations.delete"),
-            destructive: true,
-          }))
+          action === "edit" &&
+          !(await open<boolean>(
+            SubscriptionDialog,
+            { subscription },
+            { width: 480 },
+          ).result)
         )
           return;
-        await subscriptionsModel.remove(subscription);
-      }
-      await sync();
-    });
+        if (action === "delete") {
+          if (
+            !(await confirm({
+              title: t("delete.title"),
+              message: t("delete.message", 1),
+              confirmText: t("operations.delete"),
+              destructive: true,
+            }))
+          )
+            return;
+          await subscriptionsModel.remove(subscription);
+        }
+        await sync();
+      },
+      { label },
+    );
   }
   return {
     store,

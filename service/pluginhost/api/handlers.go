@@ -1,4 +1,4 @@
-package controller
+package api
 
 import (
 	"errors"
@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/db/configure"
-	"github.com/v2rayA/v2rayA/plugins"
+	"github.com/v2rayA/v2rayA/pluginhost"
 	"github.com/v2rayA/v2rayA/plugins/autogroup"
 )
 
@@ -62,7 +62,7 @@ func setGroupPolicy(outbound string, policy configure.GroupPolicy) error {
 
 // GetPluginLog 返回决策日志的状态：文件路径、当前级别、可用级别。
 func GetPluginLog(ctx *gin.Context) {
-	p := plugins.AutoGroup()
+	p := pluginhost.AutoGroup()
 	if p == nil {
 		common.ResponseError(ctx, logError(pluginNotInstalled))
 		return
@@ -108,7 +108,7 @@ func PutPluginLog(ctx *gin.Context) {
 		common.ResponseError(ctx, logError(err))
 		return
 	}
-	if p := plugins.AutoGroup(); p != nil {
+	if p := pluginhost.AutoGroup(); p != nil {
 		if l := p.Logger(); l != nil {
 			l.SetLevel(level)
 		}
@@ -119,7 +119,7 @@ func PutPluginLog(ctx *gin.Context) {
 // GetPlugins 返回全部插件的状态列表。
 func GetPlugins(ctx *gin.Context) {
 	common.ResponseSuccess(ctx, gin.H{
-		"plugins": plugins.Manager().List(),
+		"plugins": pluginhost.Manager().List(),
 	})
 }
 
@@ -145,9 +145,9 @@ func PutPlugin(ctx *gin.Context) {
 
 	var err error
 	if data.Enabled {
-		err = plugins.Manager().Enable(data.Name)
+		err = pluginhost.Manager().Enable(data.Name)
 	} else {
-		err = plugins.Manager().Disable(data.Name)
+		err = pluginhost.Manager().Disable(data.Name)
 	}
 	if err != nil {
 		common.ResponseError(ctx, logError(err))
@@ -172,7 +172,7 @@ func DeletePlugin(ctx *gin.Context) {
 		common.ResponseError(ctx, badRequest("plugin", `request body must be {"name": string}`))
 		return
 	}
-	if err := plugins.Manager().Uninstall(data.Name); err != nil {
+	if err := pluginhost.Manager().Uninstall(data.Name); err != nil {
 		common.ResponseError(ctx, logError(err))
 		return
 	}
@@ -196,7 +196,7 @@ func PostPluginTest(ctx *gin.Context) {
 		return
 	}
 
-	p := plugins.AutoGroup()
+	p := pluginhost.AutoGroup()
 	if p == nil {
 		common.ResponseError(ctx, logError(pluginNotInstalled))
 		return
@@ -223,7 +223,7 @@ func PostPluginTest(ctx *gin.Context) {
 
 // GetPluginGroups 返回自动分组插件视角下的全部分组及其节点健康状态。
 func GetPluginGroups(ctx *gin.Context) {
-	p := plugins.AutoGroup()
+	p := pluginhost.AutoGroup()
 	if p == nil {
 		common.ResponseError(ctx, logError(pluginNotInstalled))
 		return
@@ -234,13 +234,24 @@ func GetPluginGroups(ctx *gin.Context) {
 		return
 	}
 	groups := make([]gin.H, 0)
-	for _, g := range plugins.Groups() {
+	for _, g := range autogroup.Groups() {
 		groups = append(groups, gin.H{
 			"outbound": g.Name,
 			"status":   pilot.Status(g.Name, g.Candidates),
 		})
 	}
-	common.ResponseSuccess(ctx, gin.H{"groups": groups})
+	// A group the watchdog gave up on is surfaced here so an outage shows on
+	// the page instead of only in the log.
+	alerts := map[string]string{}
+	if wd := p.Watchdog(); wd != nil {
+		for _, name := range wd.Alerts() {
+			alerts[name] = "all nodes unreachable"
+		}
+	}
+	if len(alerts) == 0 {
+		alerts = nil
+	}
+	common.ResponseSuccess(ctx, gin.H{"groups": groups, "alerts": alerts})
 }
 
 // PutPluginPolicy 修改一个分组的自动化策略（模式与阈值）。

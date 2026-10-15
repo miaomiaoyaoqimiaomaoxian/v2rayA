@@ -61,6 +61,35 @@ export default {
       warn: "Avisos",
       error: "Somente erros",
     },
+    settings: "Configurações de plugins",
+    settingsTitle: "Configurações de plugins",
+    allNodesDown: "{count} grupo(s) sem nó utilizável",
+    proxyImportTitle: "Importar assinaturas pelo proxy",
+    proxyImportHint:
+      "Algumas assinaturas só são acessíveis pelo proxy. A opção própria do v2rayA é ignorada enquanto um proxy transparente como o TUN está ativo, e essas assinaturas falham ao importar. Este plugin as busca pelo proxy local.",
+    proxyImportSwitch: "Buscar assinaturas pelo proxy",
+    proxyImportSwitchHint:
+      "Vale para a importação e para as atualizações agendadas.",
+    proxyImportDirectFirst: "Tentar a rota direta primeiro",
+    proxyImportDirectFirstHint:
+      "Uma assinatura acessível direto não gasta um salto pelo proxy.",
+    proxyImportTimeout: "Tempo limite (segundos)",
+    proxyImportInactive:
+      "A opção está ligada, mas o plugin proxyimport está parado: nada muda até ligá-lo.",
+    watchdogTitle: "Vigilante de saúde",
+    watchdogHint:
+      "Testa o nó de cada grupo pelo proxy local e troca quando ele para de funcionar. É isso que faz a troca automática realmente acontecer depois da escolha inicial.",
+    watchdogEnabled: "Testar grupos em segundo plano",
+    watchdogEnabledHint:
+      "Com isso desligado o plugin ainda escolhe um nó ao iniciar, mas não percebe se ele cair depois.",
+    watchdogInterval: "Intervalo (segundos)",
+    watchdogIntervalHint:
+      "Menor significa recuperação mais rápida e mais requisições.",
+    watchdogProbeUrl: "Endereço de teste",
+    watchdogProbeUrlHint:
+      "Acessado pelo próprio nó do grupo. Deixe vazio para o padrão.",
+    watchdogOffWarning:
+      "O vigilante está desligado, então a troca automática não vai rodar: um nó que cai depois de iniciar continuará em uso.",
   },
   onboarding: {
     title: "Tutorial rápido",

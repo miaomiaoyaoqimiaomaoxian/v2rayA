@@ -90,7 +90,15 @@ func startBoundDeviceGuard() error {
 // cleanupResidualTransparentProxyRules cleans up any residual iptables/nftables rules
 // that may have been left behind after an abnormal termination (e.g., kill -9, system crash, panic).
 // It uses "2>/dev/null || true" to ensure no errors are raised if rules/chains don't exist.
+//
+// 非 Linux 平台没有 iptables/nft 规则，整段清理只会因为 sh 不存在而失败；
+// Run(true) 遇错即停，于是"没有规则要清"被报成致命错误并让核心启动失败。
+// 其余平台的等价清理由 tunCleanupResidual 与各平台钩子负责。
 func cleanupResidualTransparentProxyRules() error {
+	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
+		tunCleanupResidual()
+		return nil
+	}
 	tunCleanupResidual()
 	commands := `
 # 清理 DNS_MARK 链（TProxy 模式）

@@ -273,7 +273,9 @@ func UpdateSubscription(index int, disconnectIfNecessary bool) (err error) {
 		return err
 	}
 	addr := subscription.Address
-	c := httpClient.GetHttpClientAutomatically()
+	// ForSubscription honours a plugin's choice of client, which is how a
+	// subscription reachable only through the proxy gets updated.
+	c := httpClient.GetHttpClientForSubscription()
 	resolv.CheckResolvConf()
 	subscriptionInfos, status, err := ResolveSubscriptionWithClient(addr, c)
 	if err != nil {

@@ -21,6 +21,7 @@ import type {
   Which,
 } from "@/api/types";
 import { openLoading, useConfirm, useDialog, useNotify } from "@/composables";
+import { beginTask, setTaskProgress } from "@/composables/useBackgroundTask";
 import ImportDialog from "@/dialogs/Import.vue";
 import SharingDialog from "@/dialogs/Sharing.vue";
 import SubscriptionDialog from "@/dialogs/Subscription.vue";
@@ -393,12 +394,27 @@ export function useDashboard() {
     await refreshSubscription(id);
   }
 
+  /**
+   * updateAll refreshes every subscription in turn.
+   *
+   * The loop is serial on purpose — subscriptions often come from the same
+   * airport and hammering it in parallel gets the account rate-limited — so
+   * the top bar reports how many are done rather than spinning per request.
+   */
   async function updateAll() {
     if (subscriptionsBusy.value) return;
+    const total = subscriptions.value.length;
     updatingAll.value = true;
+    const key = "dashboard:updateAll";
+    const task = beginTask(key, "updateAllSubscriptions");
     try {
-      for (const { id } of subscriptions.value) await refreshSubscription(id);
+      for (const [i, { id }] of subscriptions.value.entries()) {
+        setTaskProgress(key, total > 0 ? (i + 1) / total : undefined);
+        await refreshSubscription(id);
+      }
+      setTaskProgress(key, 1);
     } finally {
+      task.end();
       updatingAll.value = false;
     }
   }

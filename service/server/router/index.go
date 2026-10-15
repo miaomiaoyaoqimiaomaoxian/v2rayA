@@ -23,6 +23,7 @@ import (
 	"github.com/v2rayA/v2rayA/pkg/server/jwt"
 	"github.com/v2rayA/v2rayA/pkg/server/reqCache"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
+	pluginapi "github.com/v2rayA/v2rayA/pluginhost/api"
 	"github.com/v2rayA/v2rayA/server/controller"
 	"github.com/vearutop/statigz"
 )
@@ -313,6 +314,10 @@ func Run() error {
 		auth.GET("tproxyWhiteIpGroups", controller.GetTproxyWhiteIpGroups)
 		auth.PUT("domainsExcluded", controller.PutDomainsExcluded)
 		auth.PUT("tproxyWhiteIpGroups", controller.PutTproxyWhiteIpGroups)
+
+		// 插件相关的路由集中在一个函数里。删掉 service/pluginhost 目录与
+		// 这一行调用，v2rayA 即回到不含插件的原生形态。
+		pluginapi.RegisterRoutes(auth)
 	}
 
 	ServeGUI(root)

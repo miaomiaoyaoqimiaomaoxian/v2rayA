@@ -7,15 +7,24 @@
 import { ref } from "vue";
 import {
   deletePlugin,
-  getPluginGroupStatuses,
+  getPluginGroups,
   getPluginLog,
+  getPluginProxyImport,
   getPlugins,
+  getPluginWatchdog,
   putPlugin,
   putPluginLog,
   putPluginPolicy,
+  putPluginProxyImport,
+  putPluginWatchdog,
   postPluginTest,
 } from "@/api";
-import type { PluginGroupStatus, PluginInfo } from "@/api";
+import type {
+  PluginGroupStatus,
+  PluginInfo,
+  PluginProxyImportSettings,
+  PluginWatchdogSettings,
+} from "@/api";
 import { errorText } from "@/api/errors";
 
 // 组件从 model 取类型，不必再从 @/api 引一次。
@@ -46,6 +55,19 @@ export function usePlugins() {
   const busy = ref(false);
   const logState = ref<PluginLogState>({ level: "info", path: "", levels: [] });
 
+  /**
+   * Groups the watchdog could not route at all. The user asked for a hint when
+   * a node dies for good; a group that has no working node is the case worth
+   * interrupting for, because nothing else in the UI shows it.
+   */
+  const alerts = ref<Record<string, string>>({});
+  /** proxyimport: fetch subscriptions through v2rayA. */
+  const proxyImport = ref<PluginProxyImportSettings | null>(null);
+  const proxyImportActive = ref(false);
+  /** autogroup's watchdog, i.e. whether failover actually runs. */
+  const watchdog = ref<PluginWatchdogSettings | null>(null);
+  const watchdogRunning = ref(false);
+
   /** 把分组状态挂到 autogroup 上；其它插件没有分组概念。 */
   function withGroups(
     list: PluginInfo[],
@@ -62,13 +84,30 @@ export function usePlugins() {
     loading.value = true;
     loadError.value = "";
     try {
-      const [list, groups, log] = await Promise.all([
+      const [list, groupResp, log, pi, wd] = await Promise.all([
         getPlugins().then((r) => r.plugins),
-        getPluginGroupStatuses().catch(() => [] as PluginGroupStatus[]),
+        // A group endpoint failure must not blank the whole page: the plugin
+        // list is still useful without it.
+        getPluginGroups().catch(() => null),
         getPluginLog().catch(() => null),
+        getPluginProxyImport().catch(() => null),
+        getPluginWatchdog().catch(() => null),
       ]);
-      plugins.value = withGroups(list, groups);
+      const groups = groupResp?.groups ?? [];
+      alerts.value = groupResp?.alerts ?? {};
+      plugins.value = withGroups(
+        list,
+        groups.map((g) => g.status),
+      );
       if (log) logState.value = log;
+      if (pi) {
+        proxyImport.value = pi.settings;
+        proxyImportActive.value = pi.active;
+      }
+      if (wd) {
+        watchdog.value = wd.settings;
+        watchdogRunning.value = wd.running;
+      }
     } catch (err) {
       loadError.value = errorText(err);
       throw err;
@@ -80,14 +119,52 @@ export function usePlugins() {
   async function setEnabled(name: string, enabled: boolean) {
     busy.value = true;
     try {
-      const [{ plugins: list }, groups] = await Promise.all([
+      const [{ plugins: list }, groupResp, pi, wd] = await Promise.all([
         putPlugin({ name, enabled }),
-        getPluginGroupStatuses().catch(() => [] as PluginGroupStatus[]),
+        getPluginGroups().catch(() => null),
+        getPluginProxyImport().catch(() => null),
+        getPluginWatchdog().catch(() => null),
       ]);
-      plugins.value = withGroups(list, groups);
+      alerts.value = groupResp?.alerts ?? {};
+      plugins.value = withGroups(
+        list,
+        (groupResp?.groups ?? []).map((g) => g.status),
+      );
+      if (pi) {
+        proxyImport.value = pi.settings;
+        proxyImportActive.value = pi.active;
+      }
+      if (wd) {
+        watchdog.value = wd.settings;
+        watchdogRunning.value = wd.running;
+      }
       // 详情对话框开着时同步它，否则会显示旧状态。
       if (detail.value?.name === name)
         detail.value = plugins.value.find((p) => p.name === name) ?? null;
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  /** Store the proxyimport switch; `active` tells us if it took effect. */
+  async function saveProxyImport(settings: PluginProxyImportSettings) {
+    busy.value = true;
+    try {
+      const res = await putPluginProxyImport(settings);
+      proxyImport.value = res.settings;
+      proxyImportActive.value = res.active;
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  /** Store the watchdog settings; they take effect without a restart. */
+  async function saveWatchdog(settings: PluginWatchdogSettings) {
+    busy.value = true;
+    try {
+      const res = await putPluginWatchdog(settings);
+      watchdog.value = res.settings;
+      watchdogRunning.value = res.running;
     } finally {
       busy.value = false;
     }
@@ -153,10 +230,17 @@ export function usePlugins() {
     testing,
     busy,
     logState,
+    alerts,
+    proxyImport,
+    proxyImportActive,
+    watchdog,
+    watchdogRunning,
     sync,
     setEnabled,
     uninstall,
     savePolicy,
+    saveProxyImport,
+    saveWatchdog,
     setLogLevel,
     testGroup,
   };
