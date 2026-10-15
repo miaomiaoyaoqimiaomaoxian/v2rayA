@@ -175,6 +175,90 @@ export const putGfwList = (body: { downloadLink: string }) =>
 export const deleteGfwList = () =>
   call<unknown>({ url: "gfwList", method: "delete" });
 
+// ---- plugins -------------------------------------------------------------------
+// The plugins page: what is installed, what is running, and the per-group
+// automation policy of the autogroup plugin.
+export interface PluginInfo {
+  name: string;
+  description: string;
+  version: string;
+  /** builtin plugins are compiled in and cannot be uninstalled */
+  builtin: boolean;
+  /** "enabled" | "disabled" */
+  state: string;
+  /** whether OnStart has run and the plugin is receiving events */
+  running: boolean;
+}
+export const getPlugins = () =>
+  call<{ plugins: PluginInfo[] }>({ url: "plugins", method: "get" });
+export const putPlugin = (body: { name: string; enabled: boolean }) =>
+  call<{ plugins: PluginInfo[] }>({ url: "plugin", method: "put", data: body });
+export const deletePlugin = (body: { name: string }) =>
+  call<{ plugins: PluginInfo[] }>({
+    url: "plugin",
+    method: "delete",
+    data: body,
+  });
+
+/** One node's health as the autogroup plugin sees it. */
+export interface PluginNodeStatus {
+  node: Which;
+  alive: boolean;
+  fails: number;
+  latencyMs: number;
+  checkedAt: number;
+  lastError?: string;
+}
+export interface PluginGroupStatus {
+  outbound: string;
+  /** "any" picks whichever node works; "pinned" keeps a fixed candidate set */
+  mode: string;
+  failThreshold: number;
+  maxSwitches: number;
+  nodes: PluginNodeStatus[];
+}
+export const getPluginGroups = () =>
+  call<{ groups: { outbound: string; status: PluginGroupStatus }[] }>({
+    url: "pluginGroups",
+    method: "get",
+  });
+/** The backend wraps each group as {outbound, status}; flatten to just status. */
+export async function getPluginGroupStatuses(): Promise<PluginGroupStatus[]> {
+  const { groups } = await getPluginGroups();
+  return (groups ?? []).map((g) => g.status);
+}
+export const putPluginPolicy = (body: {
+  outbound: string;
+  policy: {
+    mode: string;
+    failThreshold: number;
+    maxSwitches: number;
+    autoTest: boolean;
+  };
+}) =>
+  call<{ policy: unknown }>({ url: "pluginPolicy", method: "put", data: body });
+export const postPluginTest = (body: { outbound: string }) =>
+  call<{ results: Record<string, { Alive: boolean; LatencyMs: number }> }>({
+    url: "pluginTest",
+    method: "post",
+    data: body,
+    timeout: timeouts.none,
+  });
+
+/** Where the decision log lives and how loud it is. */
+export interface PluginLogResponse {
+  /** "debug" | "info" | "warn" | "error" */
+  level: string;
+  /** absolute path; empty when the log is not open */
+  path: string;
+  levels: string[];
+  running?: boolean;
+}
+export const getPluginLog = () =>
+  call<PluginLogResponse>({ url: "pluginLog", method: "get" });
+export const putPluginLog = (body: { level: string }) =>
+  call<PluginLogResponse>({ url: "pluginLog", method: "put", data: body });
+
 // ---- logs ------------------------------------------------------------------------
 /** GET /logger answers plain text from the byte offset `skip`, not the envelope. */
 export const getLogger = async (params: { skip: number }): Promise<string> => {

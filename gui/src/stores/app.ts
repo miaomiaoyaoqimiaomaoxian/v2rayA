@@ -30,6 +30,7 @@ export type View =
   | "subscriptions"
   | "settings"
   | "logs"
+  | "plugins"
   | "docs"
   | "about";
 

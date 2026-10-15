@@ -21,6 +21,12 @@ type NodeRef struct {
 	Outbound string    `json:"outbound"`
 }
 
+// Key 返回该节点引用的稳定字符串标识，用于健康状态缓存等跨会话索引。
+// Outbound 不参与：同一个节点加到不同分组时，健康状态是同一件事。
+func (w NodeRef) Key() string {
+	return fmt.Sprintf("%v/%v/%v", w.TYPE, w.ID, w.Sub)
+}
+
 type NodeRefs struct {
 	Touches []*NodeRef `json:"touches"`
 }

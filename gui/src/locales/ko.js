@@ -1,4 +1,67 @@
 export default {
+  plugins: {
+    intro:
+      "플러그인은 v2rayA를 확장합니다. 사용 중지하면 더 이상 개입하지 않으며, 설정은 그대로 남습니다.",
+    none: "플러그인 없음",
+    noneHint: "서버에 설치된 플러그인이 여기에 표시됩니다.",
+    enabled: "플러그인 사용",
+    disabled: "플러그인 중지",
+    stateRunning: "실행 중",
+    stateStopped: "중지됨",
+    builtin: "내장",
+    builtinHint:
+      "이 플러그인은 v2rayA에 내장되어 있어, 제거할 수 없고 중지만 할 수 있습니다.",
+    uninstall: "제거",
+    uninstallTitle: "플러그인 제거",
+    uninstallMessage:
+      "{name}을(를) 제거하고 모든 데이터를 삭제할까요? 되돌릴 수 없습니다.",
+    uninstalled: "플러그인을 제거했습니다",
+    groupsTitle: "아웃바운드 그룹",
+    modeAny: "사용 가능한 아무 노드",
+    modePinned: "고정된 노드 집합",
+    policyTitle: "{name} 자동화",
+    policySubtitle:
+      "이 그룹이 노드를 고르는 방식과 플러그인이 개입하는 시점입니다.",
+    mode: "동작 방식",
+    failThreshold: "전환 전 허용 실패 횟수",
+    failThresholdHint:
+      "현재 노드가 연속으로 이만큼 실패하면 플러그인이 노드를 전환합니다. '사용 가능한 아무 노드' 모드에만 적용됩니다.",
+    maxSwitches: "전체 재테스트 전 연속 전환 횟수",
+    maxSwitchesHint:
+      "연속으로 이만큼 전환한 뒤에는 하나씩 시도하는 대신 모든 후보를 다시 테스트합니다.",
+    autoTest: "백그라운드에서 노드 테스트",
+    autoTestHint:
+      "노드 상태 캐시를 최신으로 유지해, 전환할 때 바로 사용 가능한 노드를 고릅니다.",
+    groupsCount: "그룹",
+    testNodes: "노드 테스트",
+    tested: "노드 테스트 완료",
+    policySaved: "정책을 저장했습니다",
+    manage: "관리",
+    manageSubtitle: "플러그인 추가, 삭제, 가져오기, 내보내기",
+    external: "외부 플러그인",
+    externalNone: "외부 플러그인 없음",
+    add: "추가",
+    addName: "플러그인 이름",
+    addNamePlaceholder: "my-plugin",
+    import: "가져오기",
+    export: "내보내기",
+    transferHint:
+      "내장 플러그인은 v2rayA에 함께 포함됩니다. 외부 플러그인 채널은 아직 연결되지 않아 가져오기와 내보내기를 사용할 수 없습니다.",
+    notYet: "{action} 아직 사용할 수 없습니다",
+    logTitle: "의사 결정 로그",
+    logPath: "위치",
+    logUnavailable: "로그가 열려 있지 않습니다",
+    logLevel: "수준",
+    logLevelHint:
+      "디버그 수준은 모든 중간 단계를 기록해 데이터가 훨씬 많아집니다. 문제를 추적할 때만 켜세요.",
+    nodeCount: "노드 없음 | 노드 1개 | 노드 {n}개",
+    logLevels: {
+      debug: "디버그",
+      info: "정보",
+      warn: "경고",
+      error: "오류만",
+    },
+  },
   onboarding: {
     title: "사용 안내",
     importTitle: "노드 가져오기",
@@ -81,6 +144,7 @@ export default {
     setting: "설정",
     about: "정보",
     docs: "문서",
+    plugins: "플러그인",
     loggedAs: "로그인 계정: {username}",
     checkRunning: "확인 중",
     isRunning: "실행 중",

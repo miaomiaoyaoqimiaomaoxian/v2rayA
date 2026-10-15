@@ -21,6 +21,7 @@ import {
   mdiBookOpenPageVariantOutline,
   mdiDotsVertical,
   mdiPower,
+  mdiPuzzleOutline,
 } from "@mdi/js";
 import {
   deleteV2ray,
@@ -76,6 +77,7 @@ import PortsDialog from "@/dialogs/settings/Ports.vue";
 import AboutView from "@/views/AboutView.vue";
 import DashboardView from "@/views/DashboardView.vue";
 import LogsView from "@/views/LogsView.vue";
+import PluginsView from "@/views/PluginsView.vue";
 import ProxiesView from "@/views/ProxiesView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import SubscriptionsView from "@/views/SubscriptionsView.vue";
@@ -462,6 +464,16 @@ onBeforeUnmount(() => window.removeEventListener("hashchange", openHash));
           </template>
           <v-list density="compact" min-width="240" class="pa-2">
             <v-list-item
+              :prepend-icon="mdiPuzzleOutline"
+              :title="t('common.plugins')"
+              :active="store.view === 'plugins'"
+              rounded="xl"
+              @click="
+                store.view = 'plugins';
+                barMenu = false;
+              "
+            />
+            <v-list-item
               :prepend-icon="mdiBookOpenPageVariantOutline"
               :title="t('common.docs')"
               :active="store.view === 'docs'"
@@ -530,6 +542,11 @@ onBeforeUnmount(() => window.removeEventListener("hashchange", openHash));
         />
         <LogsView
           v-else-if="store.view === 'logs'"
+          ref="pageRef"
+          :key="sessionSerial"
+        />
+        <PluginsView
+          v-else-if="store.view === 'plugins'"
           ref="pageRef"
           :key="sessionSerial"
         />

@@ -1,12 +1,14 @@
 // The destinations the drawer, the rail and the bottom bar offer; the
 // app bar titles the current one. About lives at the bottom of the
 // settings page. The bottom bar holds five, Material's limit, so on a
-// phone the docs move to the app bar's menu.
+// phone the docs and the plugins move to the app bar's menu.
 import {
   mdiBookOpenPageVariant,
   mdiBookOpenPageVariantOutline,
   mdiCogOutline,
   mdiCog,
+  mdiPuzzleOutline,
+  mdiPuzzle,
   mdiRss,
   mdiRssBox,
   mdiScriptTextOutline,
@@ -29,7 +31,7 @@ export interface Destination {
 
 /** the five the compact window's bottom bar shows */
 export const barDestinations = () =>
-  destinations.filter((d) => d.view !== "docs");
+  destinations.filter((d) => d.view !== "docs" && d.view !== "plugins");
 
 export const destinations: Destination[] = [
   {
@@ -61,6 +63,12 @@ export const destinations: Destination[] = [
     label: "common.log",
     icon: mdiScriptTextOutline,
     activeIcon: mdiScriptText,
+  },
+  {
+    view: "plugins",
+    label: "common.plugins",
+    icon: mdiPuzzleOutline,
+    activeIcon: mdiPuzzle,
   },
   {
     view: "docs",

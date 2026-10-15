@@ -1,4 +1,67 @@
 export default {
+  plugins: {
+    intro:
+      "Plugins extend v2rayA. Disabling one stops it from acting; your settings stay.",
+    none: "No plugins",
+    noneHint: "Plugins installed on the server will show up here.",
+    enabled: "Plugin enabled",
+    disabled: "Plugin disabled",
+    stateRunning: "Running",
+    stateStopped: "Stopped",
+    builtin: "Built in",
+    builtinHint:
+      "This plugin is compiled into v2rayA; disable it instead of removing it.",
+    uninstall: "Uninstall",
+    uninstallTitle: "Uninstall plugin",
+    uninstallMessage:
+      "Remove {name} and delete all of its data? This cannot be undone.",
+    uninstalled: "Plugin uninstalled",
+    groupsTitle: "Outbound groups",
+    modeAny: "Any node that works",
+    modePinned: "Fixed node set",
+    policyTitle: "{name} automation",
+    policySubtitle:
+      "How this group picks its node, and when the plugin steps in.",
+    mode: "Behavior",
+    failThreshold: "Failures before switching",
+    failThresholdHint:
+      'How many times the current node may fail in a row before the plugin switches. Applies to the "any node" mode.',
+    maxSwitches: "Switches before a full re-test",
+    maxSwitchesHint:
+      "After this many switches in a row the plugin re-tests every candidate instead of trying them one by one.",
+    autoTest: "Test nodes in the background",
+    autoTestHint:
+      "Keep the cached node health fresh so a switch picks a working node immediately.",
+    groupsCount: "Groups",
+    testNodes: "Test nodes",
+    tested: "Node test finished",
+    policySaved: "Policy saved",
+    manage: "Manage",
+    manageSubtitle: "Add, remove, import or export plugins",
+    external: "External",
+    externalNone: "No external plugins",
+    add: "Add",
+    addName: "Plugin name",
+    addNamePlaceholder: "my-plugin",
+    import: "Import",
+    export: "Export",
+    transferHint:
+      "Built-in plugins ship inside v2rayA; the external channel is not wired up yet, so importing and exporting are not available.",
+    notYet: "{action} is not available yet",
+    logTitle: "Decision log",
+    logPath: "Location",
+    logUnavailable: "The log is not open",
+    logLevel: "Level",
+    logLevelHint:
+      "Debug records every intermediate step and is far larger; raise it only while chasing a problem.",
+    nodeCount: "no nodes | 1 node | {n} nodes",
+    logLevels: {
+      debug: "Debug",
+      info: "Info",
+      warn: "Warnings",
+      error: "Errors only",
+    },
+  },
   onboarding: {
     title: "Quick tutorial",
     importTitle: "Import nodes",
@@ -83,6 +146,7 @@ export default {
     setting: "Settings",
     about: "About",
     docs: "Documentation",
+    plugins: "Plugins",
     loggedAs: "Logged in as {username}",
     checkRunning: "Checking",
     isRunning: "Running",

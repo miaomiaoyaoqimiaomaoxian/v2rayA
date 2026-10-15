@@ -1,4 +1,67 @@
 export default {
+  plugins: {
+    intro:
+      "Plugins estendem o v2rayA. Ao desativar, ele deixa de agir; suas configurações são mantidas.",
+    none: "Nenhum plugin",
+    noneHint: "Plugins instalados no servidor aparecerão aqui.",
+    enabled: "Plugin ativado",
+    disabled: "Plugin desativado",
+    stateRunning: "Em execução",
+    stateStopped: "Parado",
+    builtin: "Integrado",
+    builtinHint:
+      "Este plugin faz parte do v2rayA; desative-o em vez de removê-lo.",
+    uninstall: "Desinstalar",
+    uninstallTitle: "Desinstalar plugin",
+    uninstallMessage:
+      "Remover {name} e apagar todos os seus dados? Isso não pode ser desfeito.",
+    uninstalled: "Plugin desinstalado",
+    groupsTitle: "Grupos de saída",
+    modeAny: "Qualquer nó que funcione",
+    modePinned: "Conjunto fixo de nós",
+    policyTitle: "Automação de {name}",
+    policySubtitle:
+      "Como este grupo escolhe o nó e quando o plugin entra em ação.",
+    mode: "Comportamento",
+    failThreshold: "Falhas antes de trocar",
+    failThresholdHint:
+      'Quantas vezes seguidas o nó atual pode falhar antes de o plugin trocá-lo. Vale para o modo "qualquer nó".',
+    maxSwitches: "Trocas antes de testar tudo",
+    maxSwitchesHint:
+      "Após essa quantidade de trocas seguidas, o plugin testa todos os candidatos em vez de tentá-los um a um.",
+    autoTest: "Testar nós em segundo plano",
+    autoTestHint:
+      "Mantém o cache de saúde dos nós atualizado, para que a troca escolha logo um nó que funcione.",
+    groupsCount: "Grupos",
+    testNodes: "Testar nós",
+    tested: "Teste de nós concluído",
+    policySaved: "Política salva",
+    manage: "Gerenciar",
+    manageSubtitle: "Adicionar, remover, importar ou exportar plugins",
+    external: "Externos",
+    externalNone: "Nenhum plugin externo",
+    add: "Adicionar",
+    addName: "Nome do plugin",
+    addNamePlaceholder: "my-plugin",
+    import: "Importar",
+    export: "Exportar",
+    transferHint:
+      "Plugins integrados vêm dentro do v2rayA; o canal de plugins externos ainda não está conectado, então importar e exportar não estão disponíveis.",
+    notYet: "{action} ainda não está disponível",
+    logTitle: "Registro de decisões",
+    logPath: "Local",
+    logUnavailable: "O registro não está aberto",
+    logLevel: "Nível",
+    logLevelHint:
+      "Depuração registra cada etapa intermediária e gera muito mais dados; ative apenas ao investigar um problema.",
+    nodeCount: "nenhum nó | 1 nó | {n} nós",
+    logLevels: {
+      debug: "Depuração",
+      info: "Informação",
+      warn: "Avisos",
+      error: "Somente erros",
+    },
+  },
   onboarding: {
     title: "Tutorial rápido",
     importTitle: "Importar nós",
@@ -83,6 +146,7 @@ export default {
     setting: "Configurações",
     about: "Sobre",
     docs: "Documentação",
+    plugins: "Plugins",
     loggedAs: "Conectado como {username}",
     checkRunning: "Verificando",
     isRunning: "Em execução",

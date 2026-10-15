@@ -232,17 +232,13 @@ func deleteTransparentProxyRulesKeepSystemProxy() {
 	time.Sleep(30 * time.Millisecond)
 }
 
+// deleteTransparentProxyRules lets iptables.SystemProxy decide how to undo
+// the system proxy: it restores the snapshot when one exists and disables
+// ProxyEnable when none does. Gating on "a snapshot exists" skipped the
+// second case, so the proxy survived a switch back to tun still pointing at
+// 52345 -- a port only the system_proxy mode listens on.
 func deleteTransparentProxyRules() {
 	deleteTransparentProxyRulesKeepSystemProxy()
-	var snapshot interface{}
-	found, err := configure.GetSystemProxySnapshot(&snapshot)
-	if err != nil {
-		log.Warn("read original system proxy: %v", err)
-		return
-	}
-	if !found {
-		return
-	}
 	if err := iptables.SystemProxy.GetCleanCommands().Run(true); err != nil {
 		log.Warn("restore system proxy: %v", err)
 	}
