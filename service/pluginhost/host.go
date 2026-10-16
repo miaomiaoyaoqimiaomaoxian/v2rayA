@@ -63,7 +63,15 @@ func mgr() *plugin.Manager {
 		// The core publishes its lifecycle events here. Wiring it in this
 		// package rather than in main.go keeps the dependency running one
 		// way: core -> host -> plugins, never the reverse.
-		v2ray.SetPluginNotifier(func(event string) { manager.Bus().Publish(event, nil) })
+		//
+		// The publish must not run on the caller's goroutine: the core emits
+		// these from inside the process manager, and a plugin handler that
+		// probes (autogroup does, for every group) would otherwise block core
+		// startup for as long as the probes take. That is what left the API
+		// listener unbound while the process sat in onCoreStarted.
+		v2ray.SetPluginNotifier(func(event string) {
+			go manager.Bus().Publish(event, nil)
+		})
 	})
 	return manager
 }

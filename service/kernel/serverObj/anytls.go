@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/v2rayA/v2rayA/kernel/coreObj"
 )
@@ -52,9 +53,25 @@ type anytlsSettings struct {
 	Port                             int    `json:"port"`
 	Password                         string `json:"password"`
 	SNI                              string `json:"sni,omitempty"`
+	AllowInsecure                    bool   `json:"allow_insecure,omitempty"`
 	MinIdleSessions                  int    `json:"min_idle_sessions,omitempty"`
 	PinnedPeerCertificateChainSha256 string `json:"pinned_peer_certificate_chain_sha256,omitempty"`
 	VerifyPeerCertByName             string `json:"verifyPeerCertByName,omitempty"`
+}
+
+// anytlsInsecure reports whether a link asks to skip certificate verification.
+//
+// Airports publish links with "insecure=1" (and the clash form uses
+// skip-cert-verify). Both spellings are accepted because either can appear in
+// a subscription, and the parameter is often present but empty.
+func anytlsInsecure(q url.Values) bool {
+	for _, key := range []string{"insecure", "allowInsecure", "allow_insecure", "skip-cert-verify", "skipCertVerify"} {
+		switch strings.ToLower(q.Get(key)) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AnyTLS) Configuration(info PriorInfo) (c Configuration, err error) {
@@ -76,6 +93,7 @@ func (s *AnyTLS) Configuration(info PriorInfo) (c Configuration, err error) {
 		Port:                             s.Port,
 		Password:                         password,
 		SNI:                              sni,
+		AllowInsecure:                    anytlsInsecure(q),
 		MinIdleSessions:                  minIdle,
 		PinnedPeerCertificateChainSha256: q.Get("pinnedPeerCertSha256"),
 		VerifyPeerCertByName:             q.Get("verifyPeerCertByName"),

@@ -99,14 +99,11 @@ func (p *Plugin) OnStart(ctx *plugin.Context) error {
 	pilot := NewAutoPilot(ProbeNodes, ApplySelection)
 	pilot.SetLogger(logger)
 
-	// 巡检是自动切换的实际驱动方：没有它，失败计数永远停在 0。
-	if WatchdogEnabled() {
-		interval, probeURL := WatchdogConfig()
-		w := NewWatchdog(pilot, interval, probeURL)
-		w.Start()
-		p.watchdog = w
-	}
-
+	// The watchdog is started by onCoreStarted, not here. Probing before the
+	// core is listening reports every group as unreachable: the probes fail
+	// with EOF, the failure counters jump, and the plugin switches away from
+	// nodes that were fine. That produced a burst of false failures on every
+	// start.
 	p.unsubscribes = []func(){
 		ctx.Events.Subscribe(plugin.EventCoreStarted, func(interface{}) {
 			p.onCoreStarted()
@@ -195,12 +192,46 @@ func (p *Plugin) logEvent(ev Event) {
 	}
 }
 
-// onCoreStarted 在核心启动后校正所有分组。
+// onCoreStarted 在核心启动后校正所有分组，并在这里启动健康巡检。
+//
+// 这个方法由事件总线调用，而总线可能是同步的；它对每个分组都要探测，合计
+// 可能几十秒。所以真正的工作放到 goroutine 里，让调用方立刻返回——否则
+// 核心的启动流程会被它挡住，管理后台的端口永远绑不上。
 func (p *Plugin) onCoreStarted() {
-	pilot := p.Pilot()
+	p.mu.Lock()
+	pilot := p.pilot
+	// 巡检在核心就绪后才开始：过早探测会把每个分组都判成不可用。
+	if WatchdogEnabled() && p.watchdog == nil {
+		interval, probeURL := WatchdogConfig()
+		w := NewWatchdog(pilot, interval, probeURL)
+		w.Start()
+		p.watchdog = w
+	}
+	p.mu.Unlock()
 	if pilot == nil {
 		return
 	}
+	// 这次启动如果是本插件自己重载引起的，就不要再校正一轮：那条路径会
+	// 立刻重新探测，探测失败又触发切换，形成无限重载。重载后的选择本来
+	// 就是刚写进配置的，不需要重新决定。
+	if consumeReloadSuppression() {
+		p.logEvent(Event{
+			Decision: "event",
+			Level:    LevelDebug,
+			Msg:      "核心启动来自本插件的切换，跳过校正以避免重载环",
+		})
+		return
+	}
+	go p.reconcileGroups(pilot)
+}
+
+// reconcileGroups 校正所有分组的出口节点。在独立 goroutine 中执行。
+func (p *Plugin) reconcileGroups(pilot *AutoPilot) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("plugin/autogroup: 校正分组时 panic: %v", r)
+		}
+	}()
 	groups := Groups()
 	p.logEvent(Event{
 		Decision: "event",

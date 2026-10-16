@@ -157,12 +157,28 @@ func parseLatency(s string) (alive bool, ms int64) {
 	return false, 0
 }
 
+// reloadCooldown 限制由插件触发的核心重载频率。
+//
+// 没有它就会形成反馈环：探测失败 → 切换 → 重载核心 → core.started 事件
+// → 重新探测 → 又失败 → 再切换……核心每十几秒重启一次，用户看到的代理
+// 时断时续。冷却期内仍然落库（用户在界面上看到的选择是准的），只是不再
+// 立刻重载核心。
+const reloadCooldown = 30 * time.Second
+
+var (
+	reloadMu       sync.Mutex
+	lastReloadAt   time.Time
+	reloadSuppress int
+)
+
 // ApplySelection 把某个节点设为分组的唯一出口，并让核心生效。
 //
 // 走的是与 web 界面「选择单个节点」完全相同的路径
 // （OutboundSetting.Selected + UpdateV2RayConfig），因此：
 //   - 失败时由 UpdateV2RayConfig 负责回滚；
 //   - 用户在界面上看到的"当前节点"与插件选中的始终一致。
+//
+// 但重载受冷却限制：见 reloadCooldown 的说明。
 func ApplySelection(outbound string, ref configure.NodeRef) error {
 	sr, err := ref.LocateServerRaw()
 	if err != nil {
@@ -177,7 +193,35 @@ func ApplySelection(outbound string, ref configure.NodeRef) error {
 		// 核心没运行：只落库，等它启动时 EnsureGroup 会再校正一次。
 		return nil
 	}
+
+	reloadMu.Lock()
+	tooSoon := !lastReloadAt.IsZero() && time.Since(lastReloadAt) < reloadCooldown
+	if !tooSoon {
+		lastReloadAt = time.Now()
+		// 这次重载是我们自己发起的，它产生的 core.started 不该再触发一轮
+		// 全量校正——那正是反馈环的下一条边。
+		reloadSuppress++
+	}
+	reloadMu.Unlock()
+
+	if tooSoon {
+		log.Warn("plugin/autogroup: 分组 %q 的切换已落库，但距上次重载不足 %s，暂不重载核心",
+			outbound, reloadCooldown)
+		return nil
+	}
 	return v2ray.UpdateV2RayConfig()
+}
+
+// consumeReloadSuppression 报告"这次 core.started 是否由本插件的重载引起"。
+// 是则消费掉标记并返回 true，调用方应跳过一次全量校正。
+func consumeReloadSuppression() bool {
+	reloadMu.Lock()
+	defer reloadMu.Unlock()
+	if reloadSuppress > 0 {
+		reloadSuppress--
+		return true
+	}
+	return false
 }
 
 // TestHTTPLatency 与 httpLatencyClient 是对 service.TestHttpLatency 的

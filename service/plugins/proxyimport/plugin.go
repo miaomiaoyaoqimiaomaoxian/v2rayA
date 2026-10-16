@@ -14,6 +14,7 @@
 package proxyimport
 
 import (
+	"sync"
 	"time"
 
 	"github.com/v2rayA/v2rayA/common/httpClient"
@@ -44,12 +45,12 @@ func (Plugin) Builtin() bool       { return true }
 // OnStart installs the client override.
 func (Plugin) OnStart(ctx *plugin.Context) error {
 	settings := Load()
-	*override = func() (any, bool) {
+	SetOverride(func() (any, bool) {
 		if !settings.PreferProxy {
 			return nil, false
 		}
 		return buildProxyClient(settings)
-	}
+	})
 	ctx.Logger().Info("已启用：订阅可通过本机代理导入（直接不通时回退）")
 	return nil
 }
@@ -57,7 +58,7 @@ func (Plugin) OnStart(ctx *plugin.Context) error {
 // OnStop restores the default client selection. The settings stay so enabling
 // the plugin later brings the behaviour back.
 func (Plugin) OnStop(ctx *plugin.Context) error {
-	*override = nil
+	SetOverride(nil)
 	ctx.Logger().Info("已停用：订阅导入不再使用本机代理")
 	return nil
 }
@@ -104,29 +105,44 @@ func (s *Settings) FillEmpty() {
 	}
 }
 
-// override is the hook the core calls. nil means "no plugin is steering
-// fetches", which is the state a build without this plugin is always in.
-var override *func() (any, bool)
+// override is the hook the core calls. A nil function means "no plugin is
+// steering fetches", which is the state a build without this plugin is always
+// in.
+//
+// It is a plain function value guarded by a mutex rather than a pointer: an
+// earlier version held a *func and assigned through it, which panicked with a
+// nil dereference on every start because nothing had allocated it.
+var (
+	overrideMu sync.RWMutex
+	override   func() (any, bool)
+)
 
 // SetOverride installs the hook. The core calls this once at startup; passing
 // nil restores vanilla behaviour.
 func SetOverride(f func() (any, bool)) {
-	override = &f
+	overrideMu.Lock()
+	override = f
+	overrideMu.Unlock()
 }
 
 // Active reports whether a plugin is currently steering fetches.
 func Active() bool {
-	return override != nil && *override != nil
+	overrideMu.RLock()
+	defer overrideMu.RUnlock()
+	return override != nil
 }
 
 // ClientFor returns the client a subscription fetch should use.
 //
 // It returns (nil, false) to say "use the core's own decision".
 func ClientFor() (any, bool) {
-	if override == nil || *override == nil {
+	overrideMu.RLock()
+	f := override
+	overrideMu.RUnlock()
+	if f == nil {
 		return nil, false
 	}
-	return (*override)()
+	return f()
 }
 
 // buildProxyClient returns a client that goes through v2rayA's local socks

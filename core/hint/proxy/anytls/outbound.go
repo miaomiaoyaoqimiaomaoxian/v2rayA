@@ -38,6 +38,35 @@ type Client struct {
 	sessionClientOnce sync.Once
 }
 
+// clientTLSConfig builds the TLS configuration for one outbound.
+//
+// Two ways to accept a certificate this client cannot otherwise validate:
+//
+//   - A pinned chain: the pin verifier checks the raw certificates, so the
+//     built-in chain and host checks are bypassed. Without that a self-signed
+//     certificate could never satisfy both.
+//   - AllowInsecure: the server presents a shared certificate whose name does
+//     not match the SNI. This is what "insecure=1" in a subscription link
+//     means. A pin wins when both are present, since it is the stronger check.
+//
+// ServerName is filled in by the caller, which knows the address.
+func clientTLSConfig(config *ClientConfig) (*tls.Config, error) {
+	cfg := &tls.Config{}
+	if config.PinnedPeerCertificateChainSha256 != "" {
+		hash, err := tlsutil.ParsePinnedChain(config.PinnedPeerCertificateChainSha256)
+		if err != nil {
+			return nil, fmt.Errorf("anytls: invalid pinned peer certificate chain hash: %w", err)
+		}
+		cfg.VerifyPeerCertificate = tlsutil.PinVerifier(hash)
+		cfg.InsecureSkipVerify = true // #nosec G402 -- guarded by pinning
+		return cfg, nil
+	}
+	if config.AllowInsecure {
+		cfg.InsecureSkipVerify = true // #nosec G402 -- the user asked for it
+	}
+	return cfg, nil
+}
+
 // NewClient creates a new anytls outbound handler.
 func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 	if config.Address == "" {
@@ -56,19 +85,11 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 		sni = config.Address
 	}
 
-	tlsCfg := &tls.Config{
-		ServerName: sni,
+	tlsCfg, err := clientTLSConfig(config)
+	if err != nil {
+		return nil, err
 	}
-	if config.PinnedPeerCertificateChainSha256 != "" {
-		hash, err := tlsutil.ParsePinnedChain(config.PinnedPeerCertificateChainSha256)
-		if err != nil {
-			return nil, fmt.Errorf("anytls: invalid pinned peer certificate chain hash: %w", err)
-		}
-		tlsCfg.VerifyPeerCertificate = tlsutil.PinVerifier(hash)
-		// Pin verification is self-contained against rawCerts, so the chain / host
-		// checks can be bypassed. Without this a self-signed cert would always fail.
-		tlsCfg.InsecureSkipVerify = true // #nosec G402 -- guarded by pinning
-	}
+	tlsCfg.ServerName = sni
 
 	minIdle := int(config.MinIdleSessions)
 	if minIdle <= 0 {
