@@ -20,6 +20,14 @@ func resetReloadState() {
 	lastReloadAt = time.Time{}
 	reloadSuppress = 0
 	reloadMu.Unlock()
+	resetReconcileState()
+}
+
+func resetReconcileState() {
+	reconcileMu.Lock()
+	lastReconcileAt = time.Time{}
+	reconcileRunning = false
+	reconcileMu.Unlock()
 }
 
 // TestReloadSuppressionIsConsumedOnce 验证自触发标记只消费一次：
@@ -80,4 +88,34 @@ func TestReloadCooldownBlocksRapidReloads(t *testing.T) {
 	if tooSoon {
 		t.Fatal("超过冷却期后应放行")
 	}
+}
+
+// TestReconcileGateIsMutuallyExclusive 验证全量校正的两个闸门：
+// 并发只放一个进去，且冷却期内不再放。
+func TestReconcileGateIsMutuallyExclusive(t *testing.T) {
+	resetReconcileState()
+	t.Cleanup(resetReconcileState)
+
+	if !tryBeginReconcile() {
+		t.Fatal("第一次应放行")
+	}
+	// 已有一次在跑：第二次必须被拦下，否则并发校正会互相覆盖结论。
+	if tryBeginReconcile() {
+		t.Fatal("已有一次在校正时不应再放行")
+	}
+	endReconcile()
+
+	// 结束了，但还在冷却期内：仍然不放行。
+	if tryBeginReconcile() {
+		t.Fatal("冷却期内不应放行第二次校正")
+	}
+
+	// 冷却期过后恢复放行。
+	reconcileMu.Lock()
+	lastReconcileAt = time.Now().Add(-reconcileCooldown - time.Second)
+	reconcileMu.Unlock()
+	if !tryBeginReconcile() {
+		t.Fatal("超过冷却期后应恢复放行")
+	}
+	endReconcile()
 }

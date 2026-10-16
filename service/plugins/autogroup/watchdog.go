@@ -159,14 +159,109 @@ func (w *Watchdog) client() *http.Client {
 	return buildProbeClient()
 }
 
-// buildProbeClient returns a client that goes through the local socks port.
+// buildProbeClient returns a client that reaches the nodes through the local
+// proxy port.
+//
+// Which port: the plain socks port (Ports.Socks5) is the natural choice, but
+// it is not guaranteed to carry traffic — in system_proxy mode the transparent
+// inbound is what serves requests, and the plain socks inbound can accept a
+// connection and then drop it. Probing through a dead port reports every group
+// as unreachable, which is exactly the false alarm this watchdog must not
+// raise.
+//
+// So the port is chosen by reachability, in order:
+//
+//  1. the transparent socks port, which exists precisely to serve a local
+//     client and is bound to the loopback interface;
+//  2. the plain socks port;
+//  3. the plain http port.
+//
+// The first one that answers a probe wins, and the choice is remembered so
+// later rounds do not repeat the search.
 func buildProbeClient() *http.Client {
-	port := configure.GetPortsNotNil().Socks5
-	if port == 0 {
-		return nil
+	ports := configure.GetPortsNotNil()
+	if scheme, port, ok := watchdogPort(); ok {
+		return probeClientFor(scheme, port)
 	}
+	candidates := []struct {
+		port   int
+		scheme string
+	}{
+		{ports.Socks5WithPac, "socks5"}, // transparent socks
+		{ports.Socks5, "socks5"},        // plain socks
+		{ports.Http, "http"},            // plain http
+	}
+	probeURL := defaultProbeURL
+	for _, c := range candidates {
+		if c.port == 0 {
+			continue
+		}
+		client := probeClientFor(c.scheme, c.port)
+		if probeReachable(client, probeURL) {
+			setWatchdogPort(c.scheme, c.port)
+			log.Info("plugin/autogroup: 巡检使用本机代理端口 %s://127.0.0.1:%d", c.scheme, c.port)
+			return client
+		}
+	}
+	// Nothing answered: fall back to the plain socks port so the failure is
+	// reported as a probe failure rather than silently skipping the round.
+	if ports.Socks5 != 0 {
+		return probeClientFor("socks5", ports.Socks5)
+	}
+	return nil
+}
+
+// probeReachable reports whether a client can complete one request.
+func probeReachable(client *http.Client, probeURL string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), watchdogProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode < 500
+}
+
+// watchdogPort remembers which local port the probe settled on, so later rounds
+// do not repeat the search. The zero value means "not chosen yet".
+var (
+	watchdogPortMu     sync.Mutex
+	watchdogPortScheme string
+	watchdogPortNumber int
+)
+
+func watchdogPort() (string, int, bool) {
+	watchdogPortMu.Lock()
+	defer watchdogPortMu.Unlock()
+	if watchdogPortNumber == 0 {
+		return "", 0, false
+	}
+	return watchdogPortScheme, watchdogPortNumber, true
+}
+
+func setWatchdogPort(scheme string, port int) {
+	watchdogPortMu.Lock()
+	watchdogPortScheme, watchdogPortNumber = scheme, port
+	watchdogPortMu.Unlock()
+}
+
+// resetWatchdogPort forgets the chosen port so the next build searches again.
+// A test uses this to keep cases independent.
+func resetWatchdogPort() {
+	watchdogPortMu.Lock()
+	watchdogPortScheme, watchdogPortNumber = "", 0
+	watchdogPortMu.Unlock()
+}
+
+func probeClientFor(scheme string, port int) *http.Client {
 	proxy := url.URL{
-		Scheme: "socks5",
+		Scheme: scheme,
 		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
 	}
 	return &http.Client{

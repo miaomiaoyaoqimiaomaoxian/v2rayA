@@ -16,6 +16,7 @@ import (
 
 	"github.com/v2rayA/v2rayA/db"
 	"github.com/v2rayA/v2rayA/db/configure"
+	"github.com/v2rayA/v2rayA/kernel/v2ray"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
 	"github.com/v2rayA/v2rayA/plugin"
 )
@@ -123,6 +124,16 @@ func (p *Plugin) OnStart(ctx *plugin.Context) error {
 		Reason:   fmt.Sprintf("版本 %s，决策日志 %s", pluginVersion, loggerPathOrNone(logger)),
 	})
 	ctx.Logger().Info("autogroup 已启用（版本 %s）", pluginVersion)
+
+	// The core may already be running: enabling a plugin does not restart it,
+	// so no core.started event is coming. Without this the watchdog would never
+	// start and the plugin would only ever pick a node once, leaving a node
+	// that dies later in place — the exact failure this plugin exists to fix.
+	// Probing here is safe because the core is up by definition in this branch;
+	// when it is not, the core.started subscription above does the work.
+	if v2ray.ProcessManager.Running() {
+		go p.onCoreStarted()
+	}
 	return nil
 }
 
@@ -222,11 +233,56 @@ func (p *Plugin) onCoreStarted() {
 		})
 		return
 	}
+	// 太频繁或已有一次在跑就跳过：见 reconcileCooldown 的说明。
+	if !tryBeginReconcile() {
+		p.logEvent(Event{
+			Decision: "event",
+			Level:    LevelDebug,
+			Msg:      "距上次校正不足冷却期或已有一次在跑，跳过本轮",
+		})
+		return
+	}
 	go p.reconcileGroups(pilot)
+}
+
+// reconcileCooldown 限制全量校正的密度。
+//
+// 每次 core.started 都会触发一次校正，而校正要探测全部分组（每组建到
+// 8 秒超时）。核心频繁重载时，这一轮还没完下一轮已经开始，既拖慢重载又
+// 反复写同一份结论。冷却期内跳过，上一轮的选择本来仍然有效。
+const reconcileCooldown = 60 * time.Second
+
+var (
+	reconcileMu      sync.Mutex
+	lastReconcileAt  time.Time
+	reconcileRunning bool
+)
+
+// tryBeginReconcile 申请一次全量校正。返回 false 表示"太频繁或已有一次在
+// 跑"，调用方应直接返回。
+func tryBeginReconcile() bool {
+	reconcileMu.Lock()
+	defer reconcileMu.Unlock()
+	if reconcileRunning {
+		return false
+	}
+	if !lastReconcileAt.IsZero() && time.Since(lastReconcileAt) < reconcileCooldown {
+		return false
+	}
+	lastReconcileAt = time.Now()
+	reconcileRunning = true
+	return true
+}
+
+func endReconcile() {
+	reconcileMu.Lock()
+	reconcileRunning = false
+	reconcileMu.Unlock()
 }
 
 // reconcileGroups 校正所有分组的出口节点。在独立 goroutine 中执行。
 func (p *Plugin) reconcileGroups(pilot *AutoPilot) {
+	defer endReconcile()
 	defer func() {
 		if r := recover(); r != nil {
 			log.Warn("plugin/autogroup: 校正分组时 panic: %v", r)

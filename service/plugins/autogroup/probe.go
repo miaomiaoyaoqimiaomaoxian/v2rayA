@@ -178,20 +178,25 @@ var (
 //   - 失败时由 UpdateV2RayConfig 负责回滚；
 //   - 用户在界面上看到的"当前节点"与插件选中的始终一致。
 //
-// 但重载受冷却限制：见 reloadCooldown 的说明。
+// 重载与落库都受冷却限制：见 reloadCooldown。
+//
+// 为什么冷却期内连 Selected 也不写：写库本身会触发 servers.changed，插件
+// 收到后又校正、又探测、又切换，于是冷却期每轮都在改配置，反馈环照旧转。
+// 冷却期内完全不落库，让"已切换"的状态保持稳定，环才会真正断开。
 func ApplySelection(outbound string, ref configure.NodeRef) error {
 	sr, err := ref.LocateServerRaw()
 	if err != nil {
 		return err
 	}
 	setting := configure.GetOutboundSetting(outbound)
-	setting.Selected = sr.ServerObj.ExportToURL()
-	if err := configure.SetOutboundSetting(outbound, setting); err != nil {
-		return err
+	// 已经是当前节点：没有变化就不要写库，更不要重载。
+	if setting.Selected == sr.ServerObj.ExportToURL() {
+		return nil
 	}
 	if !v2ray.ProcessManager.Running() {
 		// 核心没运行：只落库，等它启动时 EnsureGroup 会再校正一次。
-		return nil
+		setting.Selected = sr.ServerObj.ExportToURL()
+		return configure.SetOutboundSetting(outbound, setting)
 	}
 
 	reloadMu.Lock()
@@ -205,9 +210,14 @@ func ApplySelection(outbound string, ref configure.NodeRef) error {
 	reloadMu.Unlock()
 
 	if tooSoon {
-		log.Warn("plugin/autogroup: 分组 %q 的切换已落库，但距上次重载不足 %s，暂不重载核心",
+		log.Warn("plugin/autogroup: 分组 %q 的切换已决定，但距上次重载不足 %s，暂不落库也不重载",
 			outbound, reloadCooldown)
 		return nil
+	}
+
+	setting.Selected = sr.ServerObj.ExportToURL()
+	if err := configure.SetOutboundSetting(outbound, setting); err != nil {
+		return err
 	}
 	return v2ray.UpdateV2RayConfig()
 }
