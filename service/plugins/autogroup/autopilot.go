@@ -154,50 +154,35 @@ func (a *AutoPilot) EnsureGroup(outbound string, candidates []configure.NodeRef)
 		CacheFresh:    CountFresh(snaps),
 	}
 
-	// 1) 先从缓存里挑。缓存里没有新鲜记录时不猜，直接进探测。
+	// 1) 只从缓存里挑。
+	//
+	// 这里刻意不探测。探测走的是 v2rayA 的 TestHttpLatency，而它为了给每个
+	// 节点插入临时 inbound，会先 Start 一个探测模板再 UpdateV2RayConfig 恢复
+	// —— 也就是每次探测都完整重启核心两次。那是"用户点一次测试延迟"的场景，
+	// 一次性开销可以接受；放在自动路径上就成了永动机：探测 → 重启 → 收到
+	// core.started → 再协调 → 再探测。
+	//
+	// 所以分工是：巡检（watchdog）负责探测并刷新缓存，这里只读缓存做决定。
+	// 缓存不新鲜就等下一轮巡检，而不是在这里自己发起一次探测。
 	alive := a.aliveFromCacheLocked(candidates)
 	if len(alive) == 0 {
 		ev := base
-		ev.Decision = "fallback-to-probe"
-		ev.Msg = "缓存里没有新鲜的可用节点，改用探测"
 		ev.Reason = fmt.Sprintf("候选 %d 个，缓存新鲜的可用节点 0 个", len(candidates))
+		ev.Candidates = SnapshotCandidates(candidates, a.health, a.now().Unix())
 		ev.DurationMs = time.Since(started).Milliseconds()
-		a.logWarn(ev)
-
-		alive, err = a.probeLocked(candidates)
-		if err != nil {
-			ev = base
-			ev.Decision = "probe-failed"
-			ev.Msg = "探测失败，无法挑选节点"
-			ev.Err = err.Error()
-			ev.DurationMs = time.Since(started).Milliseconds()
-			a.logError(ev)
-			return configure.NodeRef{}, err
-		}
-	} else {
-		ev := base
-		ev.Decision = "cache-hit"
-		ev.Msg = "命中缓存，未发起探测"
-		ev.DurationMs = time.Since(started).Milliseconds()
-		a.logDebug(ev)
-	}
-
-	if len(alive) == 0 {
+		// pinned 分组的前提就是"只用这一组固定节点"，全灭必须报源头错误，
+		// 不能像 any 模式那样只说一句"没得选"——两者对用户的含义不同。
 		if policy.Mode.IsPinned() {
-			ev := base
 			ev.Decision = "all-unreachable"
 			ev.Msg = "pinned 分组候选全部不可用，这是源头错误"
 			ev.Err = "所有候选节点均无法访问"
-			ev.DurationMs = time.Since(started).Milliseconds()
 			a.logError(ev)
 			return configure.NodeRef{}, AllNodesUnreachable(outbound, candidates, a.health)
 		}
-		ev := base
 		ev.Decision = "no-reachable"
-		ev.Msg = "any 模式：候选里没有可用节点"
-		ev.DurationMs = time.Since(started).Milliseconds()
+		ev.Msg = "any 模式：缓存里没有可用节点，等巡检刷新"
 		a.logWarn(ev)
-		return configure.NodeRef{}, fmt.Errorf("outbound %q: no reachable node among %d candidates",
+		return configure.NodeRef{}, fmt.Errorf("outbound %q: no reachable node among %d candidates (cache cold)",
 			outbound, len(candidates))
 	}
 
@@ -345,12 +330,8 @@ func (a *AutoPilot) ReportFailure(outbound string, candidates []configure.NodeRe
 
 	if policy.Mode.IsPinned() {
 		// pinned 不切换节点，只在候选集确实全灭时告知源头错误。
+		// 只读缓存：探测会重启核心，见 EnsureGroup 里的说明。
 		alive := a.aliveFromCacheLocked(candidates)
-		if len(alive) == 0 {
-			if probed, e := a.probeLocked(candidates); e == nil {
-				alive = probed
-			}
-		}
 		if len(alive) == 0 {
 			ev := base
 			ev.Decision = "all-unreachable"
@@ -382,46 +363,36 @@ func (a *AutoPilot) ReportFailure(outbound string, candidates []configure.NodeRe
 		return false, nil
 	}
 
-	// 达到阈值。先取一份可用集合：缓存里有新鲜的可用节点就直接用，
-	// 否则探测一次。探测只做一次——后面"达到切换上限就全量重测"复用的
-	// 是同一份结论，重复探测既浪费又会让后一次的结果覆盖前一次的选择。
+	// 达到阈值。只读缓存取可用集合。
+	//
+	// 这里同样不探测：切换是自动路径上最频繁的动作，而探测会重启核心
+	// （见 EnsureGroup 里的说明）。缓存由巡检刷新，不新鲜就等下一轮，
+	// 宁可晚 30 秒切换，也不要让核心每几秒重启一次。
 	alive := a.aliveFromCacheLocked(candidates)
-	fromProbe := false
 	if len(alive) == 0 {
-		fromProbe = true
-		alive, err = a.probeLocked(candidates)
-		if err != nil {
-			ev := base
-			ev.Decision = "probe-failed"
-			ev.Msg = "达到切换阈值但探测失败"
-			ev.DurationMs = time.Since(started).Milliseconds()
-			a.logError(ev)
-			return false, err
-		}
+		ev := base
+		ev.Decision = "no-alternative"
+		ev.Msg = "达到切换阈值，但缓存里没有可用节点"
+		ev.Reason = fmt.Sprintf("候选 %d 个，缓存新鲜的可用节点 0 个，等巡检刷新", len(candidates))
+		ev.Candidates = SnapshotCandidates(candidates, a.health, a.now().Unix())
+		ev.DurationMs = time.Since(started).Milliseconds()
+		a.logError(ev)
+		return false, fmt.Errorf("outbound %q: every candidate node failed; no node to switch to", outbound)
 	}
 
 	a.switchCount[outbound]++
 	if a.switchCount[outbound] >= policy.MaxSwitches {
-		// 连续切换太多次，说明逐个试没有意义，做一次全量重测再选最优。
-		log.Info("autopilot: outbound %q reached %d consecutive switches; re-testing all candidates",
+		// 连续切换太多次，说明逐个试没有意义。这里不清缓存、不探测，
+		// 只是把计数归零，让下一轮从缓存里重新挑；真正的全量重测由巡检
+		// 负责（它是唯一有权探测的路径）。
+		log.Info("autopilot: outbound %q reached %d consecutive switches; resetting the counter, the watchdog will re-test",
 			outbound, a.switchCount[outbound])
 		ev := base
-		ev.Decision = "full-retest"
-		ev.Msg = fmt.Sprintf("连续切换 %d 次达到上限，改为全量重测", a.switchCount[outbound])
-		ev.Reason = "逐个试已无意义，重测后直接选最优"
+		ev.Decision = "switch-limit"
+		ev.Msg = fmt.Sprintf("连续切换 %d 次达到上限，交由巡检重测", a.switchCount[outbound])
+		ev.Reason = "逐个试已无意义，重置计数等待巡检给出新结论"
 		ev.DurationMs = time.Since(started).Milliseconds()
 		a.logWarn(ev)
-
-		alive, err = a.probeLocked(candidates)
-		if err != nil {
-			ev = base
-			ev.Decision = "retest-failed"
-			ev.Msg = "全量重测失败"
-			ev.Err = err.Error()
-			ev.DurationMs = time.Since(started).Milliseconds()
-			a.logError(ev)
-			return false, err
-		}
 		a.switchCount[outbound] = 0
 	}
 
@@ -433,7 +404,7 @@ func (a *AutoPilot) ReportFailure(outbound string, candidates []configure.NodeRe
 		ev := base
 		ev.Decision = "no-alternative"
 		ev.Msg = "达到切换阈值，但没有任何可切换的节点"
-		ev.Reason = fmt.Sprintf("候选 %d 个，可用 0 个（探测=%v）", len(candidates), fromProbe)
+		ev.Reason = fmt.Sprintf("候选 %d 个，可用 0 个", len(candidates))
 		ev.Candidates = SnapshotCandidates(candidates, a.health, a.now().Unix())
 		ev.DurationMs = time.Since(started).Milliseconds()
 		a.logError(ev)
@@ -490,10 +461,30 @@ func (a *AutoPilot) ReportSuccess(outbound string, current configure.NodeRef, la
 
 // TestCandidates 对一组候选节点做全量探测，返回每个节点的结论。
 // pinned 分组的用户主动"重测"走这里。
+//
+// 注意开销：底层 TestHttpLatency 会重启核心两次。所以只应由显式请求
+// （用户点重测）或巡检在冷却后调用，不能放在自动决策路径上。
 func (a *AutoPilot) TestCandidates(candidates []configure.NodeRef) (map[string]ProbeResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.runProbeLocked(candidates)
+}
+
+// ProbeIntoCache 执行一次全量探测并把结果写进缓存，返回可用节点数。
+//
+// 这是自动路径上唯一允许探测的入口，由巡检按冷却调用。它不切换、不落库，
+// 只刷新缓存，让随后只读缓存的 EnsureGroup / ReportFailure 有据可依。
+func (a *AutoPilot) ProbeIntoCache(candidates []configure.NodeRef) (int, error) {
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	alive, err := a.probeLocked(candidates)
+	if err != nil {
+		return 0, err
+	}
+	return len(alive), nil
 }
 
 // RefreshCandidates 在节点集合变化后刷新控制器的内部视图。

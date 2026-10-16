@@ -96,10 +96,16 @@ func TestWatchdogReportsSuccessOnHealthyNode(t *testing.T) {
 // 达到阈值后真的换到另一个节点。
 //
 // 这是用户实际遇到的场景，所以这里断言的是"换了吗"，而不只是"计数加了吗"。
+//
+// 切换需要备选节点的结论，而结论只来自探测。生产环境里巡检先探测（廉价、
+// 每轮都做），切换时若缓存里没有备选结论就发起一次全量重测。这里按同样的
+// 顺序驱动：先探测填缓存，再上报失败。
 func TestWatchdogSwitchesAfterRepeatedFailures(t *testing.T) {
 	ap, applied := setupAutoPilot(t, allAlive(10))
 	candidates := wdCandidates()
 	resetGroupPolicy(testGroup)
+	// 巡检的探测：三个候选都可用，缓存里有备选。
+	prewarm(t, ap, candidates)
 
 	dead := &http.Client{Timeout: 100 * time.Millisecond}
 	wd := NewWatchdog(ap, time.Second, "http://127.0.0.1:1/never")

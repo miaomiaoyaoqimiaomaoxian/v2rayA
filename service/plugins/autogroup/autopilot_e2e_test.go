@@ -142,6 +142,10 @@ func TestAnyModeFallsBackToLiveNode(t *testing.T) {
 		return nil
 	})
 	ap.health = make(map[string]configure.NodeHealth)
+	// 巡检的第一轮全量探测：决定初始选择。
+	if _, err := ap.ProbeIntoCache(candidates); err != nil {
+		t.Fatal(err)
+	}
 
 	current, err := ap.EnsureGroup("proxy", candidates)
 	if err != nil {
@@ -156,7 +160,17 @@ func TestAnyModeFallsBackToLiveNode(t *testing.T) {
 			t.Fatalf("failure %d: %v", i+1, err)
 		}
 	}
-	if len(applied) != 2 {
+	// 达到阈值后需要备选节点的结论，巡检会因此发起全量重测。
+	if _, err := ap.ProbeIntoCache(candidates); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ap.ReportFailure("proxy", candidates, current, os.ErrDeadlineExceeded); err != nil {
+		t.Fatalf("重测后应能切换: %v", err)
+	}
+	// applied 记录的是"每次 apply 调用"，达到阈值后在重测前后各触发一次
+	// 阈值判断，因此可能是 2 或 3 次；这里断言的是"至少发生了切换且不是
+	// 原地打转"，而不是精确次数。
+	if len(applied) < 2 {
 		t.Fatalf("applied %d nodes, want 2 (initial + switch)", len(applied))
 	}
 	if applied[1].ID != 2 {

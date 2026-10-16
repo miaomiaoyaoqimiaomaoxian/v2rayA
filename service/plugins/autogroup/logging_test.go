@@ -196,6 +196,10 @@ func TestEnsureGroupLogsCandidateSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	nodes := newTestNodes(3)
 	ap, _ := setupAutoPilot(t, allAlive(40))
+	// 先让巡检探测一轮填缓存，EnsureGroup 才有据可依。
+	if _, err := ap.ProbeIntoCache(nodes); err != nil {
+		t.Fatal(err)
+	}
 	ap.SetLogger(NewLogger(dir))
 	if _, err := ap.EnsureGroup("test", nodes); err != nil {
 		t.Fatal(err)
@@ -236,14 +240,29 @@ func TestReportFailureLogsSwitchWithBothNodes(t *testing.T) {
 	})
 	ap.SetLogger(NewLogger(dir))
 
+	// 巡检的第一次探测：只有节点 1 可用，决定初始选择。
+	if _, err := ap.ProbeIntoCache(nodes); err != nil {
+		t.Fatal(err)
+	}
 	current, err := ap.EnsureGroup("test", nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
+		// 第 5 次达到阈值而缓存里还没有备选结论，这一步会返回
+		// "no node to switch to" —— 那正是巡检该发起全量重测的信号，
+		// 所以这里不把它当失败。
 		if _, err := ap.ReportFailure("test", nodes, current, errTest); err != nil {
-			t.Fatalf("failure %d: %v", i+1, err)
+			t.Logf("failure %d 未切换（预期，等重测）: %v", i+1, err)
 		}
+	}
+	// 达到阈值后需要备选节点的结论：巡检因此发起全量重测，
+	// 这一次它给出的结论是"节点 2 可用"。
+	if _, err := ap.ProbeIntoCache(nodes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ap.ReportFailure("test", nodes, current, errTest); err != nil {
+		t.Fatalf("重测后应能切换: %v", err)
 	}
 	logPath := ap.log.Path()
 	if err := ap.log.Close(); err != nil {
@@ -263,8 +282,8 @@ func TestReportFailureLogsSwitchWithBothNodes(t *testing.T) {
 	if sw.From == "" || sw.To == "" || sw.From == sw.To {
 		t.Fatalf("switch event from/to = %q -> %q", sw.From, sw.To)
 	}
-	if sw.Fails != 5 || sw.FailThreshold != 5 {
-		t.Fatalf("switch event fails/threshold = %d/%d, want 5/5", sw.Fails, sw.FailThreshold)
+	if sw.Fails < 5 || sw.FailThreshold != 5 {
+		t.Fatalf("switch event fails/threshold = %d/%d, want >=5/5", sw.Fails, sw.FailThreshold)
 	}
 	if len(sw.Candidates) != 3 {
 		t.Fatalf("switch event lacks candidate snapshot")
@@ -313,6 +332,11 @@ func TestPinnedAllDeadLoggedAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resetGroupPolicy("test") })
+	// 巡检先探测过一轮：结论是全灭。这次探测把"全灭"写进缓存，
+	// EnsureGroup 随后只读缓存就能得出 all-unreachable。
+	if _, err := ap.ProbeIntoCache(nodes); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := ap.EnsureGroup("test", nodes); err == nil {
 		t.Fatal("expected error")
 	}

@@ -60,12 +60,26 @@ type Watchdog struct {
 	// it, so the decision path can be exercised without a live proxy.
 	clientForTest func() *http.Client
 
-	mu       sync.Mutex
-	stop     chan struct{}
-	stopped  bool
-	wg       sync.WaitGroup
-	alerting map[string]bool
+	// refreshForTest lets a test supply the full re-test used to seed the
+	// cache. nil means the production one, which restarts the core.
+	refreshForTest func() error
+
+	mu          sync.Mutex
+	stop        chan struct{}
+	stopped     bool
+	wg          sync.WaitGroup
+	alerting    map[string]bool
+	lastRefresh time.Time
 }
+
+// cacheRefreshInterval bounds how often the watchdog runs a full re-test.
+//
+// A full re-test goes through v2rayA's TestHttpLatency, which restarts the
+// core twice (it starts a probe template, then rebuilds the real config). That
+// is fine as a one-off, but running it every round is what made the core
+// restart continuously. Rounds in between only probe the current node, which
+// is a plain request through the local proxy port and costs the core nothing.
+const cacheRefreshInterval = 10 * time.Minute
 
 // NewWatchdog builds a watchdog for the given controller. A non-positive
 // interval or an empty URL falls back to the defaults.
@@ -133,6 +147,17 @@ func (w *Watchdog) Stop() {
 
 // Round runs one pass over every group. Exported so a test can drive it
 // without waiting for the ticker.
+//
+// Two kinds of work, with very different costs:
+//
+//   - Probing a group's current node goes through the local proxy port. Cheap,
+//     touches the core not at all, runs every round.
+//   - A full re-test of every candidate goes through v2rayA's TestHttpLatency,
+//     which restarts the core twice (it starts a probe template, then rebuilds
+//     the real config). That is the only way to learn whether an alternative
+//     works — testing node X means routing through node X — so it cannot be
+//     avoided, only made rare. It runs when a switch actually needs it, and no
+//     more often than cacheRefreshInterval.
 func (w *Watchdog) Round() {
 	if w.pilot == nil {
 		return
@@ -145,9 +170,53 @@ func (w *Watchdog) Round() {
 	if client == nil {
 		return // the core is not listening yet
 	}
+
+	needAlternative := false
 	for _, g := range groups {
-		w.checkGroup(client, g)
+		if w.checkGroup(client, g) {
+			needAlternative = true
+		}
 	}
+	if needAlternative {
+		w.maybeRefreshCache(groups)
+	}
+}
+
+// maybeRefreshCache runs the full re-test when its interval has elapsed.
+func (w *Watchdog) maybeRefreshCache(groups []Group) {
+	w.mu.Lock()
+	due := w.lastRefresh.IsZero() || time.Since(w.lastRefresh) >= cacheRefreshInterval
+	if due {
+		// Claim the slot before releasing the lock so overlapping rounds
+		// cannot both start a re-test.
+		w.lastRefresh = time.Now()
+	}
+	w.mu.Unlock()
+	if !due {
+		log.Debug("plugin/autogroup: 需要备选节点，但距上次全量重测不足 %s，等下一轮", cacheRefreshInterval)
+		return
+	}
+	if err := w.refreshAll(groups); err != nil {
+		log.Warn("plugin/autogroup: 全量重测失败: %v", err)
+	}
+}
+
+// refreshAll re-tests every candidate of every group, seeding the cache that
+// the decision paths read.
+func (w *Watchdog) refreshAll(groups []Group) error {
+	if w.refreshForTest != nil {
+		return w.refreshForTest()
+	}
+	total := 0
+	for _, g := range groups {
+		n, err := w.pilot.ProbeIntoCache(g.Candidates)
+		if err != nil {
+			return err
+		}
+		total += n
+	}
+	log.Info("plugin/autogroup: 全量重测完成，%d 个分组共 %d 个节点可用", len(groups), total)
+	return nil
 }
 
 // client returns the probe client. Split out from buildProbeClient so a test
@@ -274,35 +343,52 @@ func probeClientFor(scheme string, port int) *http.Client {
 	}
 }
 
-// checkGroup probes one group through its current node and reports the
-// verdict back to the controller.
-func (w *Watchdog) checkGroup(client *http.Client, g Group) {
+// checkGroup probes the group's current node through the local proxy and
+// reports the verdict back to the controller.
+//
+// It returns true when the group could not switch for lack of a fresh verdict
+// on some other candidate — the signal that a full re-test is worth its cost.
+//
+// Only the current node is probed here. Alternatives cannot be tested without
+// routing through them, which means changing the core's config and restarting
+// it (that is what TestHttpLatency does); that cost is paid only when a switch
+// actually needs a verdict, not on every round.
+func (w *Watchdog) checkGroup(client *http.Client, g Group) (needAlternative bool) {
 	current, err := CurrentNode(g)
 	if err != nil {
 		// Either the group balances on its own, or its pinned node left the
 		// candidate set. Neither is a node failure, so there is nothing to
 		// attribute and nothing to switch.
-		return
+		return false
 	}
-	w.reportOutcome(g, *current, client)
+	return w.reportOutcome(g, *current, client)
 }
 
 // reportOutcome probes through the client's proxy and feeds the verdict to the
 // controller. Split out from checkGroup so a test can supply the node and the
 // group directly, without needing the node to be pinned in the database.
-func (w *Watchdog) reportOutcome(g Group, current configure.NodeRef, client *http.Client) {
+//
+// It returns true when the switch could not be made because no other candidate
+// has a fresh verdict, which is the caller's cue that a full re-test is due.
+func (w *Watchdog) reportOutcome(g Group, current configure.NodeRef, client *http.Client) bool {
 	latency, err := w.probe(client)
 	if err == nil {
 		w.pilot.ReportSuccess(g.Name, current, latency.Milliseconds())
 		w.clearAlert(g.Name)
-		return
+		return false
 	}
-	if _, perr := w.pilot.ReportFailure(g.Name, g.Candidates, current, err); perr != nil {
-		// The controller could not find an alternative either.
+	switched, perr := w.pilot.ReportFailure(g.Name, g.Candidates, current, err)
+	if perr != nil {
+		// The controller could not find an alternative: either every cached
+		// verdict is stale, or all of them say "down". Either way it needs a
+		// fresh full re-test, which is the caller's decision to pay for.
 		w.raise(g.Name, perr)
-		return
+		return true
 	}
-	log.Info("plugin/autogroup: 分组 %q 的节点 %v 不可用（%v），已请求切换", g.Name, current.Key(), err)
+	if switched {
+		log.Info("plugin/autogroup: 分组 %q 的节点 %v 不可用（%v），已切换", g.Name, current.Key(), err)
+	}
+	return false
 }
 
 // probe performs one request through the local proxy.
