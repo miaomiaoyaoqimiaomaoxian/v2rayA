@@ -20,8 +20,12 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/v2rayA/v2rayA/db"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
@@ -127,21 +131,36 @@ func (b *Bus) Subscribe(name string, h EventHandler) func() {
 	if b == nil || h == nil {
 		return func() {}
 	}
+	// 记订阅者名字，日志里才看得见"谁在听"。handler 是闭包，直接打印
+	// 没有意义，所以用调用点传入的名字；没传就用函数名的兜底。
+	sub := handlerName(h)
 	b.mu.Lock()
 	b.handlers[name] = append(b.handlers[name], h)
 	idx := len(b.handlers[name]) - 1
+	subs := len(b.handlers[name])
 	b.mu.Unlock()
+	fw.log(FWDebug, "bus", "", "subscribe", map[string]interface{}{
+		"event": name, "sub": sub, "subs": subs,
+	})
 	return func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
 		if idx < len(b.handlers[name]) {
 			b.handlers[name] = append(b.handlers[name][:idx], b.handlers[name][idx+1:]...)
 		}
+		subs := len(b.handlers[name])
+		b.mu.Unlock()
+		fw.log(FWDebug, "bus", "", "unsubscribe", map[string]interface{}{
+			"event": name, "sub": sub, "subs": subs,
+		})
 	}
 }
 
 // Publish 同步调用该事件的所有处理器。
 // 单个 handler 的 panic 被捕获并记录，不影响其他 handler。
+//
+// 每次发布记一条框架日志：事件名、订阅者数、总耗时。事件转发的时延是
+// 月度稳定性观测的核心指标——巡检周期 30 秒，如果一次 servers.changed
+// 的处理耗时接近它，就说明有 handler 在做不该做的事。
 func (b *Bus) Publish(name string, payload interface{}) {
 	if b == nil {
 		return
@@ -150,18 +169,56 @@ func (b *Bus) Publish(name string, payload interface{}) {
 	handlers := make([]EventHandler, len(b.handlers[name]))
 	copy(handlers, b.handlers[name])
 	b.mu.RUnlock()
-	for _, h := range handlers {
-		callHandler(name, h, payload)
+	if len(handlers) == 0 {
+		// 没有订阅者：这条对"有没有人错过事件"很重要，但每条都记会淹日志，
+		// 所以只记 debug。
+		fw.log(FWDebug, "bus", "", "publish", map[string]interface{}{
+			"event": name, "subs": 0, "detail": "no subscribers",
+		})
+		return
 	}
+	started := time.Now()
+	panics := 0
+	for _, h := range handlers {
+		if callHandler(name, h, payload) {
+			panics++
+		}
+	}
+	fw.log(FWInfo, "bus", "", "publish", map[string]interface{}{
+		"event":  name,
+		"subs":   len(handlers),
+		"ms":     time.Since(started).Milliseconds(),
+		"panics": panics,
+	})
 }
 
-func callHandler(name string, h EventHandler, payload interface{}) {
+func callHandler(name string, h EventHandler, payload interface{}) (panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
+			panicked = true
 			log.Warn("plugin: event %q handler panicked: %v", name, r)
+			fw.log(FWWarn, "panic", handlerName(h), "handler-panic", map[string]interface{}{
+				"event": name,
+				"err":   fmt.Sprintf("%v", r),
+			})
 		}
 	}()
 	h(payload)
+	return false
+}
+
+// handlerName 从运行时提取 handler 的可读名字（闭包所在函数），用于日志。
+func handlerName(h EventHandler) string {
+	v := runtime.FuncForPC(reflect.ValueOf(h).Pointer())
+	if v == nil {
+		return "unknown"
+	}
+	n := v.Name()
+	// 去掉包路径，保留 plugin 包名 + 函数名，足够定位。
+	if i := strings.LastIndex(n, "/"); i >= 0 {
+		n = n[i+1:]
+	}
+	return n
 }
 
 // 核心事件名。插件订阅这些事件来响应核心状态变化。
@@ -232,6 +289,7 @@ func (m *Manager) Register(p Plugin) error {
 	if err != nil {
 		// 读不到状态不让注册失败：退回到默认值，服务仍可用。
 		log.Warn("plugin: cannot load state of %q: %v", name, err)
+		fwLogf(FWWarn, "registry", name, "register", "state load failed, using default: %v", err)
 	}
 	m.states[name] = state
 	m.contexts[name] = &Context{
@@ -239,6 +297,8 @@ func (m *Manager) Register(p Plugin) error {
 		Events:         m.bus,
 		settingsBucket: "plugin." + name,
 	}
+	fwLogf(FWInfo, "registry", name, "register",
+		"version=%s builtin=%v state=%s", p.Version(), p.Builtin(), state)
 	return nil
 }
 
@@ -342,6 +402,8 @@ func (m *Manager) StartEnabled() {
 	}
 	m.mu.RUnlock()
 	sort.Strings(names)
+	started := time.Now()
+	startedCount := 0
 	for _, n := range names {
 		m.mu.RLock()
 		state, p, ctx, already := m.states[n], m.plugins[n], m.contexts[n], m.started[n]
@@ -351,8 +413,12 @@ func (m *Manager) StartEnabled() {
 		}
 		if err := m.safeStart(n, p, ctx); err != nil {
 			log.Warn("plugin: %v", err)
+			continue
 		}
+		startedCount++
 	}
+	fwLogf(FWInfo, "lifecycle", "", "start-enabled",
+		"registered=%d started=%d took=%s", len(names), startedCount, time.Since(started).Round(time.Millisecond))
 }
 
 // StopAll 停掉全部插件。v2rayA 退出时调用。
@@ -424,7 +490,10 @@ type Info struct {
 }
 
 // safeStart 调用插件的 OnStart，捕获 panic。
+// 耗时记录进框架日志：OnStart 里做探测或打开大文件都会拖慢启用流程，
+// 这个数字是月度观测里判断"启用卡了"的第一现场。
 func (m *Manager) safeStart(name string, p Plugin, ctx *Context) error {
+	started := time.Now()
 	var err error
 	func() {
 		defer func() {
@@ -434,21 +503,32 @@ func (m *Manager) safeStart(name string, p Plugin, ctx *Context) error {
 		}()
 		err = p.OnStart(ctx)
 	}()
+	elapsed := time.Since(started)
 	if err != nil {
+		fw.log(FWWarn, "lifecycle", name, "start-failed", map[string]interface{}{
+			"ms":  elapsed.Milliseconds(),
+			"err": err.Error(),
+		})
 		return err
 	}
 	m.mu.Lock()
 	m.started[name] = true
 	m.mu.Unlock()
+	fw.log(FWInfo, "lifecycle", name, "started", map[string]interface{}{
+		"ms": elapsed.Milliseconds(),
+	})
 	log.Info("plugin: %q started", name)
 	return nil
 }
 
 // safeStop 调用插件的 OnStop，捕获 panic。stop 失败只记日志。
 func (m *Manager) safeStop(name string, p Plugin, ctx *Context) {
+	started := time.Now()
+	panicked := false
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
+				panicked = true
 				log.Warn("plugin: %q panicked in OnStop: %v", name, r)
 			}
 		}()
@@ -456,9 +536,19 @@ func (m *Manager) safeStop(name string, p Plugin, ctx *Context) {
 			log.Warn("plugin: %q OnStop: %v", name, err)
 		}
 	}()
+	elapsed := time.Since(started)
 	m.mu.Lock()
 	m.started[name] = false
 	m.mu.Unlock()
+	if panicked {
+		fw.log(FWWarn, "panic", name, "stop-panic", map[string]interface{}{
+			"ms": elapsed.Milliseconds(),
+		})
+	} else {
+		fw.log(FWInfo, "lifecycle", name, "stopped", map[string]interface{}{
+			"ms": elapsed.Milliseconds(),
+		})
+	}
 	log.Info("plugin: %q stopped", name)
 }
 

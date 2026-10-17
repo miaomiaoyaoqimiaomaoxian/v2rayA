@@ -12,8 +12,11 @@
 package pluginhost
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/kernel/v2ray"
@@ -49,6 +52,12 @@ var (
 
 func mgr() *plugin.Manager {
 	initOnce.Do(func() {
+		// Framework log before anything registers: the register events should
+		// land in the log, so the file must exist first. Same directory as the
+		// decision logs; a broken file only silences the log, never the system.
+		plugin.SetFrameworkLogDir(autogroupLogDir())
+		plugin.Snapshot(fmt.Sprintf("v2rayA plugin host starting; config dir=%s", conf.GetEnvironmentConfig().Config))
+
 		m := plugin.NewManager()
 
 		// autogroup needs the latency test, which lives in server/service.
@@ -69,12 +78,44 @@ func mgr() *plugin.Manager {
 		// probes (autogroup does, for every group) would otherwise block core
 		// startup for as long as the probes take. That is what left the API
 		// listener unbound while the process sat in onCoreStarted.
+		//
+		// The queue is one-deep on purpose: events arrive far faster than
+		// handlers can process them during a reload, and coalescing is fine —
+		// every handler re-reads the current state rather than a delta, so
+		// collapsing bursts loses nothing. The dropped counter in the log is
+		// itself a stability metric: if it climbs, handlers are too slow for
+		// the event rate and the design needs revisiting.
 		v2ray.SetPluginNotifier(func(event string) {
-			go manager.Bus().Publish(event, nil)
+			select {
+			case notifyQueue <- event:
+			default:
+				// The previous event of this kind has not been consumed yet;
+				// a newer one is already queued or being processed, which
+				// makes this one redundant.
+				fwDropped.Add(1)
+			}
 		})
+
+		// Single consumer: keeps handler execution serial, so plugin state
+		// never races with itself across events.
+		go func() {
+			for event := range notifyQueue {
+				t0 := time.Now()
+				manager.Bus().Publish(event, nil)
+				plugin.Snapshot(fmt.Sprintf("event %s handled in %s", event, time.Since(t0).Round(time.Millisecond)))
+			}
+		}()
 	})
 	return manager
 }
+
+// notifyQueue serialises event delivery to the plugins. Buffered one deep:
+// a second event while the first is being handled is coalesced away.
+var notifyQueue = make(chan string, 1)
+
+// fwDropped counts coalesced (dropped) notifications. Logged periodically;
+// a rising number means handlers cannot keep up.
+var fwDropped atomic.Uint64
 
 // Manager returns the plugin manager, building it on first use.
 func Manager() *plugin.Manager { return mgr() }
