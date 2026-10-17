@@ -24,6 +24,7 @@ import (
 	"github.com/v2rayA/v2rayA/plugin"
 	"github.com/v2rayA/v2rayA/plugins/autogroup"
 	"github.com/v2rayA/v2rayA/plugins/proxyimport"
+	"github.com/v2rayA/v2rayA/plugins/routefeeder"
 	"github.com/v2rayA/v2rayA/server/service"
 )
 
@@ -67,6 +68,7 @@ func mgr() *plugin.Manager {
 		autoGroup = autogroup.NewWithLogDir(autogroupLogDir())
 		_ = m.Register(autoGroup)         //nolint:errcheck // 注册失败在 Start 里报
 		_ = m.Register(proxyimport.New()) //nolint:errcheck
+		_ = m.Register(routefeeder.New()) //nolint:errcheck
 		manager = m
 
 		// The core publishes its lifecycle events here. Wiring it in this
