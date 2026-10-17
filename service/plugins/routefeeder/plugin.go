@@ -64,7 +64,6 @@ func defaults() Settings {
 		ProbeTimeoutMS:    5000,
 		MinBodyBytes:      64,
 		MaxLearnPerDay:    20,
-		ReloadCooldownSec: 300,
 	}
 }
 
@@ -96,9 +95,6 @@ func Save(s Settings) error {
 	if s.MaxLearnPerDay <= 0 {
 		s.MaxLearnPerDay = defaults().MaxLearnPerDay
 	}
-	if s.ReloadCooldownSec <= 0 {
-		s.ReloadCooldownSec = defaults().ReloadCooldownSec
-	}
 	return plugin.SetSetting(PluginName, "settings", s)
 }
 
@@ -112,12 +108,9 @@ type Plugin struct {
 	detector *detector
 	settings Settings
 
-	// 学习节奏控制
-	dayKey     string
-	dayCount   int
-	lastReload time.Time
-	reloadPen  bool // 有规则待重载（冷却期内攒着）
-	pending    int
+	// 探测配额（每天最多探多少个新域名）
+	dayKey   string
+	dayCount int
 }
 
 var _ plugin.Plugin = (*Plugin)(nil)
@@ -208,18 +201,23 @@ func (p *Plugin) harvestLocked() []string {
 	return out
 }
 
-// learnDomains 对一批域名做双路探测，择优写规则。
+// learnDomains 对一批域名做双路探测，结论只收集、不写规则、不重载。
+//
+// 为什么不直接写规则：写入要靠重载核心才生效，而重载就是断网几秒。
+// 观察是持续后台行为，重载不能是——所以收集与应用严格分开：
+//   收集：每轮自动做，结论落库（observations），日志可回放；
+//   应用：用户显式触发 ApplyLearned，一次性写入+重载。
+// 这样断网时机完全由用户掌控。
 func (p *Plugin) learnDomains(domains []string) {
 	p.mu.Lock()
 	s := p.settings
-	// 跨天重置配额。
 	day := time.Now().Format("2006-01-02")
 	if p.dayKey != day {
 		p.dayKey, p.dayCount = day, 0
 	}
 	if p.dayCount >= s.MaxLearnPerDay {
 		p.mu.Unlock()
-		p.logger.debug("今日学习额度已用完（%d/%d），跳过 %d 个域名",
+		p.logger.debug("今日探测额度已用完（%d/%d），跳过 %d 个域名",
 			p.dayCount, s.MaxLearnPerDay, len(domains))
 		return
 	}
@@ -228,65 +226,124 @@ func (p *Plugin) learnDomains(domains []string) {
 	}
 	p.mu.Unlock()
 
-	learnedAny := false
+	var fresh []observation
 	for _, d := range domains {
 		// 生产环境：目标留空，探测器自己按域名构造 https URL。
 		v := p.detector.probeBoth(d, "")
-		if !v.learn {
-			p.logger.debug("域名 %s 不学习：%s", d, v.reason)
-			continue
+		obs := observation{
+			Domain:     d,
+			At:         time.Now().Format(time.RFC3339),
+			DirectOK:   lineUsable(v.direct),
+			ProxyOK:    lineUsable(v.viaProxy),
+			DirectMS:   v.direct.ms,
+			ProxyMS:    v.viaProxy.ms,
+			DirectCode: v.direct.status,
+			ProxyCode:  v.viaProxy.status,
+			Verdict:    v.reason,
+		}
+		if v.learn {
+			obs.Suggested = v.chosen
 		}
 		p.mu.Lock()
-		err := p.appendRuleLocked(d, v.chosen)
-		if err == nil {
-			p.learned[d] = true
-			p.dayCount++
-			learnedAny = true
-			p.pending++
-		}
+		p.dayCount++
 		p.mu.Unlock()
-		if err != nil {
-			p.logger.error("域名 %s 写规则失败: %v", d, err)
-			continue
+		fresh = append(fresh, obs)
+		if v.learn {
+			p.logger.info("域名 %s 建议走 %s（%s）", d, v.chosen, v.reason)
+		} else {
+			p.logger.debug("域名 %s 不建议调整：%s", d, v.reason)
 		}
-		p.logger.info("学到 %s -> %s（%s）", d, v.chosen, v.reason)
 	}
-
-	if learnedAny {
-		p.maybeReload()
+	if len(fresh) > 0 {
+		if err := appendObservations(fresh); err != nil {
+			p.logger.error("落库 %d 条观察失败: %v", len(fresh), err)
+		}
 	}
 }
 
-// maybeReload 冷却期内攒着，冷却过了才重载核心一次。
-// 多个域名往往一批学完，合并成一次重载而不是每域名一次。
-func (p *Plugin) maybeReload() {
-	p.mu.Lock()
-	if p.pending == 0 {
-		p.mu.Unlock()
-		return
-	}
-	cooldown := time.Duration(p.settings.ReloadCooldownSec) * time.Second
-	if !p.lastReload.IsZero() && time.Since(p.lastReload) < cooldown {
-		p.reloadPen = true
-		p.mu.Unlock()
-		p.logger.debug("已有 %d 条新规则待生效，冷却中（%s）", p.pending, cooldown)
-		return
-	}
-	p.lastReload = time.Now()
-	n := p.pending
-	p.pending = 0
-	p.reloadPen = false
-	p.mu.Unlock()
+// observation 是一次双路探测的完整记录。
+type observation struct {
+	Domain     string `json:"domain"`
+	At         string `json:"at"`
+	DirectOK   bool   `json:"directOk"`
+	ProxyOK    bool   `json:"proxyOk"`
+	DirectMS   int64  `json:"directMs"`
+	ProxyMS    int64  `json:"proxyMs"`
+	DirectCode int    `json:"directCode,omitempty"`
+	ProxyCode  int    `json:"proxyCode,omitempty"`
+	// Suggested 是插件的建议线路："direct" 或空（不调整）。
+	Suggested string `json:"suggested,omitempty"`
+	// Verdict 是人读的判定理由。
+	Verdict string `json:"verdict"`
+}
 
-	if !v2ray.ProcessManager.Running() {
-		p.logger.info("核心未运行，%d 条新规则将在下次启动时生效", n)
-		return
+const observationsKey = "observations"
+
+// appendObservations 把观察追加到插件私有存储（保留最近 maxObs 条）。
+func appendObservations(fresh []observation) error {
+	var all []observation
+	_ = plugin.GetSetting(PluginName, observationsKey, &all)
+	all = append(all, fresh...)
+	if len(all) > maxObservations {
+		all = all[len(all)-maxObservations:]
 	}
-	if err := v2ray.UpdateV2RayConfig(); err != nil {
-		p.logger.error("重载核心使 %d 条新规则生效失败: %v", n, err)
-		return
+	return plugin.SetSetting(PluginName, observationsKey, all)
+}
+
+// maxObservations 是观察记录的保留上限（防无限增长）。
+const maxObservations = 2000
+
+// GetObservations 返回收集到的观察（API 层用，最新的在前）。
+func GetObservations() []observation {
+	var all []observation
+	if plugin.GetSetting(PluginName, observationsKey, &all) {
+		// 逆序：最新在前。
+		for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+			all[i], all[j] = all[j], all[i]
+		}
+		return all
 	}
-	p.logger.info("%d 条新规则已生效", n)
+	return nil
+}
+
+// ApplyLearned 把收集到的建议写入 RoutingA 并重载核心。
+//
+// 这是唯一的"写规则+重载"入口，只能由用户显式触发（API 或界面按钮）。
+// 断网发生在这一刻、且只发生一次——时机由用户掌控。
+// 返回写入的规则数。
+func (p *Plugin) ApplyLearned() (int, error) {
+	obs := GetObservations()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	written := 0
+	seen := make(map[string]bool)
+	for _, o := range obs {
+		if o.Suggested == "" || seen[o.Domain] {
+			continue
+		}
+		seen[o.Domain] = true
+		if err := p.appendRuleLocked(o.Domain, o.Suggested); err != nil {
+			p.logger.error("写规则 %s -> %s 失败: %v", o.Domain, o.Suggested, err)
+			continue
+		}
+		written++
+	}
+	if written == 0 {
+		return 0, nil
+	}
+	p.learned = loadLearnedSet()
+	for d := range seen {
+		p.learned[d] = true
+	}
+	persistLearned(p.learned)
+
+	if v2ray.ProcessManager.Running() {
+		if err := v2ray.UpdateV2RayConfig(); err != nil {
+			return written, fmt.Errorf("重载核心失败（规则已写入，重试或重启后生效）: %w", err)
+		}
+	}
+	p.logger.info("用户应用了 %d 条学习规则，核心已重载", written)
+	return written, nil
 }
 
 // appendRuleLocked 把 domain(...) -> outbound 追加到学习块。调用方持锁。

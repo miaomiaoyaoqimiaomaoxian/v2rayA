@@ -28,6 +28,9 @@ import (
 	"github.com/v2rayA/v2rayA/server/service"
 )
 
+// routeFeeder is kept for the API to query observations and apply rules.
+var routeFeeder *routefeeder.Plugin
+
 // autogroupLogDir is where autogroup writes its decision log: next to the
 // configuration, so a test instance and a production one never share it.
 func autogroupLogDir() string {
@@ -68,7 +71,8 @@ func mgr() *plugin.Manager {
 		autoGroup = autogroup.NewWithLogDir(autogroupLogDir())
 		_ = m.Register(autoGroup)         //nolint:errcheck // 注册失败在 Start 里报
 		_ = m.Register(proxyimport.New()) //nolint:errcheck
-		_ = m.Register(routefeeder.New()) //nolint:errcheck
+		routeFeeder = routefeeder.New()
+		_ = m.Register(routeFeeder) //nolint:errcheck
 		manager = m
 
 		// The core publishes its lifecycle events here. Wiring it in this
@@ -126,6 +130,12 @@ func Manager() *plugin.Manager { return mgr() }
 func AutoGroup() *autogroup.Plugin {
 	mgr()
 	return autoGroup
+}
+
+// RouteFeeder returns the routefeeder plugin, or nil before initialisation.
+func RouteFeeder() *routefeeder.Plugin {
+	mgr()
+	return routeFeeder
 }
 
 // Start brings up every plugin that is enabled. Called once from run(),

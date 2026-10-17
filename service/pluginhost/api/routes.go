@@ -32,4 +32,11 @@ func RegisterRoutes(auth *gin.RouterGroup) {
 	// The autogroup watchdog: interval, probe URL and whether it runs.
 	auth.GET("pluginWatchdog", GetPluginWatchdog)
 	auth.PUT("pluginWatchdog", PutPluginWatchdog)
+
+	// The routefeeder plugin: collected dual-path observations, and the
+	// explicit apply action. Apply is the only plugin path that writes rules
+	// and reloads the core, so it is user-triggered by design -- collecting
+	// never touches the running config.
+	auth.GET("pluginRouteFeed", GetPluginRouteFeed)
+	auth.POST("pluginRouteFeedApply", PostPluginRouteFeedApply)
 }
